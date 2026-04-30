@@ -1,0 +1,83 @@
+# Omni Captioner Tool Configuration
+# API-based audio captioning using Qwen3-Omni via DashScope
+
+name: omni_captioner
+description: "Audio captioning using Qwen3-Omni API via DashScope"
+version: "1.0.0"
+author: "Audio Agent Team"
+tags: ["captioning", "audio", "qwen", "omni", "api"]
+
+# MCP Server Configuration
+server:
+  command: [".venv/bin/python", "server.py"]
+  working_dir: "."
+  
+  env:
+    DASHSCOPE_API_KEY: "sk-f8ae3fc37bdd4953977e813f77b7324f"
+    DASHSCOPE_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    DEFAULT_MODEL: "qwen3.5-omni-plus"
+    DEFAULT_VOICE: "Cherry"
+    DEFAULT_AUDIO_FORMAT: "wav"
+    DEFAULT_SAMPLE_RATE: "24000"
+  
+  resources:
+    memory_gb: 2
+    gpu: false  # API-based, no local GPU needed
+    cpu_cores: 2
+  
+  lifecycle: "session"
+  startup_timeout_sec: 60  # API calls can take 10-30 seconds
+
+# Tool definitions
+tools:
+  - name: "omni_caption"
+    description: "Generate text caption for an audio file using Qwen3-Omni"
+    input_schema:
+      type: object
+      properties:
+        audio_path:
+          type: string
+          description: "Path to the audio file to caption"
+        prompt:
+          type: string
+          description: "Prompt for captioning task"
+          default: "Describe this audio in detail."
+      required: ["audio_path"]
+  
+  - name: "omni_caption_with_audio"
+    description: "Generate caption + audio response for an audio file"
+    input_schema:
+      type: object
+      properties:
+        audio_path:
+          type: string
+          description: "Path to the audio file to caption"
+        prompt:
+          type: string
+          description: "Prompt for captioning task"
+          default: "Describe this audio in detail."
+        voice:
+          type: string
+          description: "Voice for audio response (e.g., 'Cherry')"
+          default: "Cherry"
+        output_audio_path:
+          type: string
+          description: "Path to save the generated audio response"
+          default: ""
+      required: ["audio_path"]
+  
+  - name: "verify_audio_quality"
+    description: "Verify audio quality after enhancement/processing by analyzing spectrogram with VLM. Generates spectrogram and checks for artifacts, distortion, or quality issues."
+    input_schema:
+      type: object
+      properties:
+        audio_path:
+          type: string
+          description: "Path to the processed/enhanced audio file to verify (REQUIRED)"
+        reference_audio_path:
+          type: string
+          description: "Optional: Path to original audio for comparison"
+        verification_prompt:
+          type: string
+          description: "Specific instructions on what to check (e.g., 'Check for denoising artifacts', 'Compare with reference for content loss')"
+      required: ["audio_path", "verification_prompt"]
