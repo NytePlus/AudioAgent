@@ -130,10 +130,13 @@ audio_agent/
 │       ├── loader.py         # Auto-discovers and registers MCP tools
 │       ├── _template/        # Template for new MCP tools
 │       ├── asr_qwen3/        # Qwen3-ASR-1.7B speech recognition
+│       ├── qwen3_asr_flash/  # Qwen3-ASR-Flash speech recognition (API)
 │       ├── diarizen/         # Speaker diarization tool
 │       ├── ffmpeg/           # Audio processing with FFmpeg
+│       ├── image_captioner/  # Qwen Omni Flash image captioning (API)
 │       ├── librosa/          # Audio analysis with librosa
 │       ├── omni_captioner/   # Qwen3-Omni captioner (API)
+│       ├── qwen_vl_ocr/      # Qwen VL OCR (API)
 │       ├── snakers4_silero-vad/  # Voice activity detection
 │       └── evaluation_tool/  # Evaluation utilities
 ├── prompts/                   # Markdown-based prompt files
@@ -176,7 +179,8 @@ audio_agent/
 │   ├── demo_run_auto_tools.py     # Demo with auto MCP tool discovery
 │   ├── demo_run_real_asr.py       # Demo with real ASR tool (Qwen3-ASR-1.7B)
 │   ├── demo_run_api_planner.py    # Demo with API planner + local frontend
-│   └── demo_run_api_full.py       # Demo with API frontend + API planner (no local GPU needed)
+│   ├── demo_run_api_full.py       # Demo with API frontend + API planner (no local GPU needed)
+│   └── demo_run_api_full_image_correction.py # API demo with image-guided ASR correction
 └── tests/                     # Unit and smoke tests
     ├── test_state.py
     ├── test_registry.py
@@ -270,6 +274,12 @@ python -m audio_agent.examples.demo_run_api_planner \
 python -m audio_agent.examples.demo_run_api_full \
   --audio /path/to/audio.wav \
   --question "What is being said?"
+
+# Demo with image-guided ASR correction
+python -m audio_agent.examples.demo_run_api_full_image_correction \
+  --audio /path/to/audio.wav \
+  --image /path/to/screenshot.png \
+  --question "Transcribe what is being said and correct domain terms using the image."
 ```
 
 The `demo_run_api_full.py` script uses:
@@ -287,8 +297,11 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # 2. Setup individual tools
 cd audio_agent/tools/catalog/asr_qwen3 && ./setup.sh && cd -
+cd audio_agent/tools/catalog/qwen3_asr_flash && ./setup.sh && cd -
 cd audio_agent/tools/catalog/diarizen && ./setup.sh && cd -
 cd audio_agent/tools/catalog/omni_captioner && ./setup.sh && cd -
+cd audio_agent/tools/catalog/qwen_vl_ocr && ./setup.sh && cd -
+cd audio_agent/tools/catalog/image_captioner && ./setup.sh && cd -
 
 # 3. Verify a specific tool
 cd audio_agent/tools/catalog/asr_qwen3 && ./test_env.sh
@@ -795,7 +808,7 @@ validate_state_has_fields(
 
 5. **Async Support**: When using MCP tools, use `agent.arun()` instead of `agent.run()` for asynchronous execution.
 
-6. **Planner/Tools Status**: Core architecture is complete with real Qwen2.5 planner. Tools include both dummy implementations and real MCP-based tools (asr_qwen3, diarizen, omni_captioner, ffmpeg, librosa, snakers4_silero-vad).
+6. **Planner/Tools Status**: Core architecture is complete with real Qwen2.5 planner. Tools include both dummy implementations and real MCP-based tools (asr_qwen3, qwen3_asr_flash, diarizen, omni_captioner, image_captioner, qwen_vl_ocr, ffmpeg, librosa, snakers4_silero-vad).
 
 7. **Prompt System**: All prompts are externalized in `audio_agent/prompts/` as markdown files. The system uses `load_prompt()` from `audio_agent/utils/prompt_io.py` to load prompts at runtime. This enables easy customization without code changes.
 

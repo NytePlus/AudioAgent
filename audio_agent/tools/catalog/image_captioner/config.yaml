@@ -1,0 +1,35 @@
+name: image_captioner
+description: "API-based image captioning using Qwen Omni Flash via DashScope/OpenAI-compatible API."
+version: "1.0.0"
+author: "Audio Agent Team"
+tags: ["captioning", "image", "vision", "qwen", "omni", "api"]
+
+server:
+  command: [".venv/bin/python", "server.py"]
+  working_dir: "."
+  env:
+    DASHSCOPE_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    DEFAULT_MODEL: "qwen3-omni-flash"
+    TEMPERATURE: "0.05"
+    MAX_TOKENS: "1024"
+  resources:
+    memory_gb: 1
+    gpu: false
+    cpu_cores: 1
+  lifecycle: "session"
+  startup_timeout_sec: 60
+
+tools:
+  - name: "image_caption"
+    description: "Generate a caption or visual description for an image using Qwen Omni Flash via API."
+    input_schema:
+      type: object
+      properties:
+        image_path:
+          type: string
+          description: "Path to the image file to caption."
+        prompt:
+          type: string
+          description: "Optional captioning instructions."
+          default: "Describe this image in detail."
+      required: ["image_path"]

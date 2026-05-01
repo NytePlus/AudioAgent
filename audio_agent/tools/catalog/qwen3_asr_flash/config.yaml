@@ -1,0 +1,61 @@
+# Qwen3-ASR-Flash API Tool Configuration
+# Speech recognition using DashScope's qwen3-asr-flash API.
+
+name: qwen3_asr_flash
+description: "API-based speech recognition using qwen3-asr-flash with context biasing"
+version: "1.0.0"
+author: "Audio Agent Team"
+tags: ["asr", "speech", "transcription", "qwen", "api", "dashscope"]
+
+server:
+  command: [".venv/bin/python", "server.py"]
+  working_dir: "."
+
+  env:
+    DASHSCOPE_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    DEFAULT_MODEL: "qwen3-asr-flash"
+    LANGUAGE: "auto"
+    ENABLE_ITN: "false"
+    STREAM: "false"
+    MAX_LOCAL_FILE_MB: "10"
+
+  resources:
+    memory_gb: 1
+    gpu: false
+    cpu_cores: 1
+
+  lifecycle: "session"
+  startup_timeout_sec: 60
+
+tools:
+  - name: "transcribe_qwen3_asr_flash"
+    description: "Transcribe speech with qwen3-asr-flash API. Accepts an audio file/URL and optional context for domain terms, names, OCR text, or reference vocabulary."
+    input_schema:
+      type: object
+      properties:
+        audio_path:
+          type: string
+          description: "Path to local audio, audio_id such as audio_0, or public HTTP(S) audio URL."
+        context:
+          type: string
+          description: "Optional context for recognition biasing: named entities, domain terms, OCR text, or reference notes."
+          default: ""
+        language:
+          type: string
+          description: "Optional language hint such as zh, en, ja, ko, or auto."
+          default: "auto"
+        enable_itn:
+          type: boolean
+          description: "Enable inverse text normalization for Chinese/English."
+          default: false
+        stream:
+          type: boolean
+          description: "Use streaming API response collection."
+          default: false
+      required: ["audio_path"]
+
+  - name: "healthcheck"
+    description: "Verify qwen3_asr_flash dependencies without calling the API."
+    input_schema:
+      type: object
+      properties: {}

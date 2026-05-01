@@ -1,0 +1,23 @@
+[project]
+name = "qwen3-asr-flash-tool"
+version = "1.0.0"
+description = "Qwen3-ASR-Flash API MCP tool for contextual speech recognition"
+requires-python = ">=3.11"
+authors = [
+    {name = "Audio Agent Team"}
+]
+dependencies = [
+    "openai>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["server", "model"]

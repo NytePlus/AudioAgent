@@ -50,6 +50,7 @@ from audio_agent.planner.openai_compatible_planner import OpenAICompatiblePlanne
 from audio_agent.tools.registry import ToolRegistry
 from audio_agent.tools.mcp import MCPServerManager
 from audio_agent.tools.catalog import register_all_mcp_tools, list_available_tools
+from audio_agent.utils.audio_path import resolve_audio_input_path
 from audio_agent.utils.model_downloader import DEFAULT_QWEN2_AUDIO_PATH
 
 LOCAL_MODEL_TOOL_NAMES = {
@@ -315,8 +316,8 @@ async def amain() -> int:
         return 1
 
     question = args.question
-    # Resolve audio path to absolute path for tools
-    audio_paths = [str(Path(args.audio).resolve())]
+    # Resolve normal audio paths and materialize Kaldi-style ark offsets.
+    audio_paths = [resolve_audio_input_path(args.audio)]
 
     print(f"\nQuestion: {question}")
     print(f"Audio path: {audio_paths[0]}")

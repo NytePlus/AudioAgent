@@ -75,6 +75,7 @@ Tools in this catalog are organized as MCP (Model Context Protocol) servers that
 | Tool | Description | Resources | Status |
 |------|-------------|-----------|--------|
 | [asr_qwen3](./asr_qwen3/) | Speech recognition using Qwen3-ASR-1.7B | 8GB RAM, GPU optional | Ready |
+| [qwen3_asr_flash](./qwen3_asr_flash/) | Speech recognition using qwen3-asr-flash API with context biasing | API key required | Ready |
 | [diarizen](./diarizen/) | Speaker diarization using DiariZen | 8GB RAM, GPU optional | Ready |
 | [ffmpeg](./ffmpeg/) | Audio processing with FFmpeg | Minimal | Ready |
 | [librosa](./librosa/) | Audio analysis with librosa | Minimal | Ready |
@@ -86,6 +87,7 @@ Tools in this catalog are organized as MCP (Model Context Protocol) servers that
 #### Speech Processing
 - **ASR** (Automatic Speech Recognition): Transcribe speech to text
   - [asr_qwen3](./asr_qwen3/) - Qwen3-ASR-1.7B based ASR with 52 language support
+  - [qwen3_asr_flash](./qwen3_asr_flash/) - API-based Qwen3-ASR-Flash transcription with context biasing
 
 #### Speaker Analysis
 - **Diarization**: Identify who speaks when

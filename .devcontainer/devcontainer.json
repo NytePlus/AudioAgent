@@ -5,7 +5,11 @@
     "dockerfile": "Dockerfile"
   },
   "workspaceFolder": "/workspace",
+  "env": {
+    "DASHSCOPE_API_KEY": "sk-d8f5b8391d6a45f8bd689dda0e1d9cd8"
+  },
   "mounts": [
-    "source=${localWorkspaceFolder},target=/workspace,type=bind"
+    "source=${localWorkspaceFolder},target=/workspace,type=bind",
+    "source=${localEnv:HOME}/projects/slidespeech/,target=/data,type=bind,readonly"
   ]
 }
