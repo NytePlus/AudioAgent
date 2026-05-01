@@ -13,6 +13,7 @@ import argparse
 import asyncio
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 # Add project root to path for direct execution
@@ -47,6 +48,7 @@ from audio_agent.graph.nodes import (
     create_frontend_evidence_node,
     create_initial_plan_node,
     create_intent_clarification_node,
+    create_parallel_initial_tools_node,
     create_planner_decision_node,
     create_tool_executor_node,
     failure_node,
@@ -60,6 +62,7 @@ from audio_agent.graph.routing import (
     NODE_FORMAT_CHECK,
     NODE_INITIAL_PLAN,
     NODE_INTENT_CLARIFICATION,
+    NODE_PARALLEL_INITIAL_TOOLS,
     NODE_PLANNER_DECISION,
     NODE_TOOL_EXECUTOR,
     route_after_format_check,
@@ -79,8 +82,7 @@ DEFAULT_ASR_PROMPT = (
     "Transcribe the audio to text. Return only one valid JSON object with exactly this "
     'schema: {"pred": "<transcript>"}. Do not include markdown, explanations, or extra keys.'
 )
-# Default OpenAI-compatible endpoint (DashScope); planner uses this unless --planner-base-url is set.
-# Frontend uses the same URL via OpenAICompatibleFrontend when base_url is None.
+# Default OpenAI-compatible endpoint (DashScope). Shared by frontend and planner unless overridden.
 DEFAULT_COMPAT_API_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 NODE_FRONTEND_EVIDENCE = "frontend_evidence_node"
 
@@ -104,7 +106,8 @@ def build_frontend_first_graph(
     executor = ToolExecutor(registry)
 
     frontend_node = create_frontend_evidence_node(frontend)
-    initial_plan_node_fn = create_initial_plan_node(planner)
+    initial_plan_node_fn = create_initial_plan_node(planner, registry)
+    parallel_initial_tools_node_fn = create_parallel_initial_tools_node(executor, fuser, registry)
     planner_decision_node_fn = create_planner_decision_node(planner, registry)
     tool_executor_node_fn = create_tool_executor_node(executor)
     evidence_fusion_node_fn = create_evidence_fusion_node(fuser)
@@ -117,6 +120,7 @@ def build_frontend_first_graph(
 
     graph.add_node(NODE_FRONTEND_EVIDENCE, frontend_node)
     graph.add_node(NODE_INITIAL_PLAN, initial_plan_node_fn)
+    graph.add_node(NODE_PARALLEL_INITIAL_TOOLS, parallel_initial_tools_node_fn)
     graph.add_node(NODE_PLANNER_DECISION, planner_decision_node_fn)
     graph.add_node(NODE_TOOL_EXECUTOR, tool_executor_node_fn)
     graph.add_node(NODE_EVIDENCE_FUSION, evidence_fusion_node_fn)
@@ -129,7 +133,8 @@ def build_frontend_first_graph(
 
     graph.add_edge(START, NODE_FRONTEND_EVIDENCE)
     graph.add_edge(NODE_FRONTEND_EVIDENCE, NODE_INITIAL_PLAN)
-    graph.add_edge(NODE_INITIAL_PLAN, NODE_PLANNER_DECISION)
+    graph.add_edge(NODE_INITIAL_PLAN, NODE_PARALLEL_INITIAL_TOOLS)
+    graph.add_edge(NODE_PARALLEL_INITIAL_TOOLS, NODE_PLANNER_DECISION)
     graph.add_conditional_edges(
         NODE_PLANNER_DECISION,
         route_after_planner_decision,
@@ -226,6 +231,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="API key. If not provided, reads from DASHSCOPE_API_KEY or OPENAI_API_KEY.",
     )
     parser.add_argument(
+        "--base-url",
+        default=DEFAULT_COMPAT_API_BASE_URL,
+        help=(
+            "OpenAI-compatible base URL for the frontend API; also used for the planner "
+            "unless --planner-base-url is set "
+            f"(default: {DEFAULT_COMPAT_API_BASE_URL})."
+        ),
+    )
+    parser.add_argument(
         "--planner-api-key",
         default=None,
         help="API key for the planner only. Defaults to --api-key/env key when omitted.",
@@ -233,10 +247,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--planner-base-url",
         default=None,
-        help=(
-            "OpenAI-compatible base URL for the planner only; "
-            f"defaults to {DEFAULT_COMPAT_API_BASE_URL} when omitted."
-        ),
+        help="OpenAI-compatible base URL for the planner only; defaults to --base-url when omitted.",
     )
     parser.add_argument(
         "--enable-thinking",
@@ -277,6 +288,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="List available catalog tool servers and exit.",
     )
+    parser.add_argument(
+        "--external-memory-text",
+        default=None,
+        help="History transcript text exposed by the dummy external_memory_retrieve tool.",
+    )
+    parser.add_argument(
+        "--external-memory-path",
+        default=None,
+        help="Path to history transcript text exposed by the dummy external_memory_retrieve tool.",
+    )
     return parser
 
 
@@ -306,6 +327,9 @@ async def amain() -> int:
 
     args = parser.parse_args()
     selected_tools, excluded_tools = select_tool_servers(args)
+    memory_temp_path: str | None = None
+    previous_memory_path = os.environ.get("EXTERNAL_MEMORY_PATH")
+    previous_memory_text = os.environ.get("EXTERNAL_MEMORY_TEXT")
 
     api_key = args.api_key or os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("OPENAI_API_KEY")
     planner_api_key = args.planner_api_key or api_key
@@ -319,10 +343,20 @@ async def amain() -> int:
         print(f"Failed to resolve audio input: {type(exc).__name__}: {exc}")
         return 1
 
+    if args.external_memory_path:
+        os.environ["EXTERNAL_MEMORY_PATH"] = args.external_memory_path
+        os.environ.pop("EXTERNAL_MEMORY_TEXT", None)
+    elif args.external_memory_text is not None:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt", delete=False) as handle:
+            handle.write(args.external_memory_text)
+            memory_temp_path = handle.name
+        os.environ["EXTERNAL_MEMORY_PATH"] = memory_temp_path
+        os.environ["EXTERNAL_MEMORY_TEXT"] = args.external_memory_text
+
     print_separator("Audio Agent Demo (ASR, Frontend-First Graph)")
     print(f"\nPrompt: {DEFAULT_ASR_PROMPT}")
-    planner_base_url = args.planner_base_url or DEFAULT_COMPAT_API_BASE_URL
-    print(f"- {args.frontend_model} frontend (API-based)")
+    planner_base_url = args.planner_base_url or args.base_url
+    print(f"- {args.frontend_model} frontend (API-based, base URL: {args.base_url})")
     print(f"- {args.planner_model} planner (API-based, base URL: {planner_base_url})")
     print("- Graph starts at frontend_evidence_node; initial_prompt_node is skipped")
     print(f"- Auto-registered MCP tool servers: {', '.join(selected_tools)}")
@@ -345,7 +379,7 @@ async def amain() -> int:
         frontend = OpenAICompatibleFrontend(
             model=args.frontend_model,
             api_key=api_key,
-            base_url=None,
+            base_url=args.base_url,
             temperature=args.temperature,
             max_tokens=args.max_tokens,
         )
@@ -397,6 +431,19 @@ async def amain() -> int:
     finally:
         print("\nShutting down MCP servers...")
         await server_manager.shutdown_all()
+        if previous_memory_path is None:
+            os.environ.pop("EXTERNAL_MEMORY_PATH", None)
+        else:
+            os.environ["EXTERNAL_MEMORY_PATH"] = previous_memory_path
+        if previous_memory_text is None:
+            os.environ.pop("EXTERNAL_MEMORY_TEXT", None)
+        else:
+            os.environ["EXTERNAL_MEMORY_TEXT"] = previous_memory_text
+        if memory_temp_path:
+            try:
+                Path(memory_temp_path).unlink()
+            except OSError:
+                pass
 
     print_separator("Results")
     status = final_state.get("status", AgentStatus.RUNNING)

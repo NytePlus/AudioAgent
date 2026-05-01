@@ -32,6 +32,7 @@ def render_skills_reference() -> str:
     skills = data.get("skills", [])
     if not skills:
         return ""
+    abstract_slots = data.get("abstract_slots", {})
 
     lines = [
         "## Task Skills Reference",
@@ -47,6 +48,7 @@ def render_skills_reference() -> str:
         task = skill.get("task", "")
         chain = skill.get("chain", [])
         guardrails = skill.get("guardrails", [])
+        bindings = skill.get("default_bindings_from_ref_flows", {})
 
         lines.append(f"### {skill_id}")
         if task:
@@ -62,10 +64,31 @@ def render_skills_reference() -> str:
             if chain_parts:
                 lines.append(f"- **Chain**: {' → '.join(chain_parts)}")
 
+            slot_notes = []
+            for step in chain:
+                slot = step.get("slot", "")
+                slot_data = abstract_slots.get(slot, {})
+                contract = slot_data.get("contract")
+                defaults = slot_data.get("current_catalog_defaults", [])
+                if contract or defaults:
+                    default_text = f"; defaults: {', '.join(defaults)}" if defaults else ""
+                    slot_notes.append(f"{slot}: {contract or 'No contract'}{default_text}")
+            if slot_notes:
+                lines.append("- **Slots**:")
+                for note in slot_notes:
+                    lines.append(f"  - {note}")
+
         if guardrails:
             lines.append("- **Guardrails**:")
             for g in guardrails:
                 lines.append(f"  - {g}")
+
+        if bindings:
+            lines.append("- **Suggested concrete tools**:")
+            for slot, items in bindings.items():
+                tool_names = [item.get("tool", "") for item in items if item.get("tool")]
+                if tool_names:
+                    lines.append(f"  - {slot}: {', '.join(tool_names)}")
 
         lines.append("")
 

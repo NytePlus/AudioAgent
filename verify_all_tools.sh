@@ -87,7 +87,7 @@ for test_script in $TOOLS; do
     echo "Testing: $tool_name"
     echo "----------------------------------------"
     
-    if [ -f "$tool_dir/.venv/bin/python" ]; then
+    if [ -f "$tool_dir/.venv/bin/python" ] || [ ! -f "$tool_dir/setup.sh" ]; then
         if (cd "$tool_dir" && bash test_env.sh); then
             echo -e "${GREEN}✓ $tool_name: PASSED${NC}"
             PASSED=$((PASSED + 1))

@@ -14,6 +14,8 @@ server:
   env:
     DASHSCOPE_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1"
     DEFAULT_MODEL: "qwen3-asr-flash"
+    # DASHSCOPE_BASE_URL: "https://api-2.xi-ai.cn/v1"
+    # DEFAULT_MODEL: "qwen3-asr-flash-realtime"
     LANGUAGE: "auto"
     ENABLE_ITN: "false"
     STREAM: "false"

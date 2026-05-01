@@ -15,6 +15,7 @@ from audio_agent.core.logging import get_logger
 # Node name constants
 NODE_INITIAL_PROMPT = "initial_prompt_node"
 NODE_INITIAL_PLAN = "initial_plan_node"
+NODE_PARALLEL_INITIAL_TOOLS = "parallel_initial_tools_node"
 NODE_PLANNER_DECISION = "planner_decision_node"
 NODE_ANSWER = "answer_node"
 NODE_TOOL_EXECUTOR = "tool_executor_node"

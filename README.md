@@ -17,7 +17,8 @@ This framework provides a clean architecture for building audio understanding ag
 ```
 START
   -> frontend_evidence_node (LALM processes audio, generates initial caption)
-  -> initial_plan_node (question-only planning)
+  -> initial_plan_node (question + frontend-caption planning, may emit parallel planned_tool_calls)
+  -> parallel_initial_tools_node (runs independent planned_tool_calls concurrently, fuses evidence)
   -> planner_decision_node (LLM decides action; on last step forces ANSWER)
   -> [conditional routing based on decision]
      - ANSWER -> evidence_summarization_node (neutral summary of all evidence)
@@ -33,11 +34,13 @@ START
 
 **Key Behaviors:**
 
-- **Initial Planning**: Planner generates a high-level approach based only on the question.
+- **Initial Planning**: Planner generates a high-level approach from the question and frontend caption. It can also emit concrete independent `planned_tool_calls` to run once in parallel before the iterative decision loop.
+- **Parallel Initial Tools**: `parallel_initial_tools_node` executes `InitialPlan.planned_tool_calls` concurrently, appends tool history, fuses all tool results into `evidence_log`, and then hands control to the normal planner decision loop.
 - **Evidence Summarization**: Before final answer, a text-LLM compresses all evidence, planner trace, and tool history into a single neutral narrative. This prevents the frontend model from being overwhelmed by verbose raw tool outputs.
 - **Frontend Final Answer**: The frontend (audio-capable) model generates the final answer directly from the original audio(s) and summarized context, rather than the text planner producing the answer.
 - **Format Checking**: Mandatory format validation occurs before finalizing. If the format is wrong, a critique is added as evidence and planning continues.
 - **Tool Contracts**: Low-level signal/metadata tools cannot override the frontend's semantic judgments.
+- **Image Inputs**: Optional reference images are copied into the run workspace as `image_0`, `image_1`, etc. The planner sees these IDs and image tools resolve them to paths automatically.
 
 ## Project Structure
 
@@ -79,7 +82,10 @@ audio_agent/
 │       ├── asr_qwen3/     # Qwen3-ASR-1.7B speech recognition
 │       ├── qwen3_asr_flash/ # Qwen3-ASR-Flash speech recognition (API)
 │       ├── diarizen/      # Speaker diarization
+│       ├── external_memory/ # Dummy history transcript retrieval
 │       ├── image_captioner/ # Qwen Omni Flash image captioning (API)
+│       ├── image_qa/      # Vision-language image question answering (API)
+│       ├── kw_verify/     # Omni audio keyword/text verification (API)
 │       ├── omni_captioner/ # Qwen3-Omni audio captioner (API)
 │       └── qwen_vl_ocr/   # Qwen VL OCR (API)
 ├── fusion/                # Evidence fusion
@@ -161,6 +167,8 @@ cd audio_agent/tools/catalog/diarizen && ./setup.sh && cd -
 cd audio_agent/tools/catalog/omni_captioner && ./setup.sh && cd -
 cd audio_agent/tools/catalog/qwen_vl_ocr && ./setup.sh && cd -
 cd audio_agent/tools/catalog/image_captioner && ./setup.sh && cd -
+cd audio_agent/tools/catalog/image_qa && ./setup.sh && cd -
+cd audio_agent/tools/catalog/kw_verify && ./setup.sh && cd -
 
 # Or use the helper script to setup all tools
 ./verify_all_tools.sh --setup
@@ -201,8 +209,8 @@ If you don't have a local GPU or prefer to use API-based models:
 # Lightweight setup for API/CPU/Mac use.
 # This installs API/CPU dependencies and keeps local model tools out of
 # API demos unless you explicitly opt in.
-# It includes ffmpeg, librosa, omni_captioner, qwen3_asr_flash, qwen_vl_ocr,
-# and image_captioner.
+# It includes external_memory, ffmpeg, image_qa, image_captioner, kw_verify,
+# librosa, omni_captioner, qwen3_asr_flash, and qwen_vl_ocr.
 ./light_setup.sh --verify
 
 # Demo with API planner + local frontend (single audio)
@@ -217,6 +225,12 @@ python -m audio_agent.examples.demo_run_api_full \
   --question "What is being said?" \
   --frontend-model "qwen3-omni-flash" \
   --planner-model "qwen3.5-plus"
+
+# Optionally expose historical transcript text to the dummy memory tool.
+python -m audio_agent.examples.demo_run_api_full \
+  --audio /path/to/audio.wav \
+  --question "Use memory if helpful, then transcribe." \
+  --external-memory-path /path/to/history.txt
 
 # --audio also accepts Kaldi-style ark offsets and materializes them to WAV.
 python -m audio_agent.examples.demo_run_api_full \
@@ -246,8 +260,8 @@ python -m audio_agent.examples.demo_run_api_full \
   --frontend-model "qwen3-omni-flash" \
   --planner-model "qwen3.5-plus"
 
-# Image-guided ASR correction: use OCR/caption context from an image
-# to correct likely transcription mistakes in the audio.
+# Image-guided ASR correction: provide reference images as first-class inputs.
+# The planner can call OCR/caption tools with image_0/image_1 IDs.
 python -m audio_agent.examples.demo_run_api_full_image_correction \
   --audio /data/test_oracle_v1/data/format.1/data_wav.ark:16920526 \
   --image /data/test_oracle_v1/slides/child_0000/child_0000-00004.png \
@@ -266,6 +280,16 @@ By default, API demos skip local model inference tools such as ASR, VAD,
 diarization, speaker verification, and WhisperX until their runtime
 dependencies are installed. Use `--include-local-model-tools` to register them,
 or `--tools <name> ...` to choose an explicit subset.
+
+Programmatic runs can pass reference images with `image_paths`:
+
+```python
+final_state = await agent.arun(
+    question="Transcribe the audio and use the slide image to disambiguate terms.",
+    audio_paths=["/path/to/audio.wav"],
+    image_paths=["/path/to/slide.png"],
+)
+```
 
 ## Pre-downloading Models
 

@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from audio_agent.core.errors import PlannerError
 from audio_agent.core.logging import get_logger
-from audio_agent.core.schemas import InitialPlan, PlannerDecision, ToolSpec, FormatCheckResult
+from audio_agent.core.schemas import InitialPlan, PlannerDecision, ToolSpec, FormatCheckResult, ImageItem
 from audio_agent.core.state import AgentState
 from audio_agent.planner.base import BasePlanner
 from audio_agent.utils.model_io import parse_json_object_text, validate_message_sequence
@@ -131,15 +131,36 @@ class BaseModelPlanner(BasePlanner):
         """Build system prompt for initial planning phase."""
         return load_prompt("plan_system")
 
-    def build_plan_user_instruction(self, question: str, frontend_output: FrontendOutput | None = None) -> str:
+    def build_plan_user_instruction(
+        self,
+        question: str,
+        frontend_output: FrontendOutput | None = None,
+        available_tools: list[ToolSpec] | None = None,
+        image_list: list[ImageItem] | None = None,
+    ) -> str:
         """Build user instruction for initial planning phase."""
         frontend_caption = (
             frontend_output.question_guided_caption
             if frontend_output else "No frontend caption available."
         )
+        tool_summary = [
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": tool.input_schema,
+                "tags": tool.tags,
+            }
+            for tool in (available_tools or [])
+        ]
+        image_summary = [
+            f"- {image.image_id}: {image.description} (source: {image.source})"
+            for image in (image_list or [])
+        ]
         user_text = load_prompt("plan_user").format(
             question=question,
             frontend_caption=frontend_caption,
+            available_tools=json.dumps(tool_summary, ensure_ascii=True),
+            image_list="\n".join(image_summary) if image_summary else "No reference images provided.",
         )
         skills_ref = render_skills_reference()
         if skills_ref:
@@ -161,6 +182,7 @@ class BaseModelPlanner(BasePlanner):
         evidence_log = state.get("evidence_log", [])
         tool_history = state.get("tool_call_history", [])
         audio_list = state.get("audio_list", [])
+        image_list = state.get("image_list", [])
 
         evidence_summary = [
             {
@@ -193,6 +215,10 @@ class BaseModelPlanner(BasePlanner):
             f"- {a.audio_id}: {a.description} (source: {a.source})"
             for a in audio_list
         ]
+        image_summary = [
+            f"- {i.image_id}: {i.description} (source: {i.source})"
+            for i in image_list
+        ]
 
         # Load decision rules from markdown
         # Use raw rules text to preserve multi-line formatting and bullet points
@@ -208,7 +234,8 @@ class BaseModelPlanner(BasePlanner):
                 "rationale": "str - detailed rationale explaining: (a) Why this action was chosen, (b) What evidence supports it, (c) For ANSWER: why confident the frontend model can generate a correct answer (see Rule 1)",
                 "selected_tool_name": "str | null - REQUIRED for call_tool, must be a valid tool name",
                 "selected_tool_args": "dict - arguments for the tool when using call_tool. MUST be {} (empty dict) for answer/clarify_intent/fail actions, never null",
-                "selected_audio_id": "str | null - REQUIRED for call_tool, must be a valid audio_id from Available Audio Files",
+                "selected_audio_id": "str | null - required for audio tool calls, must be a valid audio_id from Available Audio Files; null for tools that do not need audio",
+                "selected_image_id": "str | null - required for image tool calls, must be a valid image_id from Available Image Files; null for tools that do not need images",
                 "draft_answer": "str | null - you do NOT need to provide this for answer; the frontend model will generate the final answer",
                 "confidence": "float - 0.0 to 1.0",
             },
@@ -217,6 +244,7 @@ class BaseModelPlanner(BasePlanner):
             "evidence_log": evidence_summary,
             "tool_call_history": tool_history_summary,
             "audio_list": "\n".join(audio_summary) if audio_summary else "- audio_0: original input audio (source: original)",
+            "image_list": "\n".join(image_summary) if image_summary else "No reference images provided.",
             "available_tools": tool_summary,
             "step_count": state.get("step_count", 0),
             "max_steps": state.get("max_steps", 10),
@@ -224,10 +252,21 @@ class BaseModelPlanner(BasePlanner):
         
         return json.dumps(payload, ensure_ascii=True)
 
-    def build_api_model_input_for_plan(self, question: str, frontend_output: FrontendOutput | None = None) -> UnifiedPlannerInput:
+    def build_api_model_input_for_plan(
+        self,
+        question: str,
+        frontend_output: FrontendOutput | None = None,
+        available_tools: list[ToolSpec] | None = None,
+        image_list: list[ImageItem] | None = None,
+    ) -> UnifiedPlannerInput:
         """Build API-style planner input for initial planning."""
         system_prompt = self.build_plan_system_prompt()
-        user_text = self.build_plan_user_instruction(question, frontend_output)
+        user_text = self.build_plan_user_instruction(
+            question,
+            frontend_output,
+            available_tools,
+            image_list,
+        )
         return UnifiedPlannerInput(
             system_prompt=system_prompt,
             task_type="initial_plan",
@@ -240,10 +279,21 @@ class BaseModelPlanner(BasePlanner):
             metadata={"planner_name": self.name, "input_format": PlannerInputFormat.API_MODEL.value},
         )
 
-    def build_local_model_input_for_plan(self, question: str, frontend_output: FrontendOutput | None = None) -> UnifiedPlannerInput:
+    def build_local_model_input_for_plan(
+        self,
+        question: str,
+        frontend_output: FrontendOutput | None = None,
+        available_tools: list[ToolSpec] | None = None,
+        image_list: list[ImageItem] | None = None,
+    ) -> UnifiedPlannerInput:
         """Build local-text-model input for initial planning."""
         system_prompt = self.build_plan_system_prompt()
-        user_text = self.build_plan_user_instruction(question, frontend_output)
+        user_text = self.build_plan_user_instruction(
+            question,
+            frontend_output,
+            available_tools,
+            image_list,
+        )
         return UnifiedPlannerInput(
             system_prompt=system_prompt,
             task_type="initial_plan",
@@ -341,7 +391,13 @@ class BaseModelPlanner(BasePlanner):
         self._validate_built_model_input(model_input)
         return model_input
 
-    def build_plan_model_input(self, question: str, frontend_output: FrontendOutput | None = None) -> UnifiedPlannerInput:
+    def build_plan_model_input(
+        self,
+        question: str,
+        frontend_output: FrontendOutput | None = None,
+        available_tools: list[ToolSpec] | None = None,
+        image_list: list[ImageItem] | None = None,
+    ) -> UnifiedPlannerInput:
         """Dispatch planner initial-plan input build by backend mode."""
         question = self.validate_question(question)
         mode = self.input_format
@@ -360,9 +416,19 @@ class BaseModelPlanner(BasePlanner):
             )
 
         if mode == PlannerInputFormat.API_MODEL:
-            model_input = self.build_api_model_input_for_plan(question, frontend_output)
+            model_input = self.build_api_model_input_for_plan(
+                question,
+                frontend_output,
+                available_tools,
+                image_list,
+            )
         elif mode == PlannerInputFormat.LOCAL_MODEL:
-            model_input = self.build_local_model_input_for_plan(question, frontend_output)
+            model_input = self.build_local_model_input_for_plan(
+                question,
+                frontend_output,
+                available_tools,
+                image_list,
+            )
         else:
             raise PlannerError(
                 "Unsupported planner input format",
@@ -432,7 +498,7 @@ class BaseModelPlanner(BasePlanner):
                 )
             # Sanitize: remove None values for fields that have defaults
             fields_with_defaults = {"notes", "clarified_intent", "expected_output_format", 
-                                    "requires_audio_output", "detailed_plan"}
+                                    "requires_audio_output", "detailed_plan", "planned_tool_calls"}
             sanitized_output = {
                 k: v for k, v in raw_output.items() 
                 if v is not None or k not in fields_with_defaults
@@ -480,7 +546,7 @@ class BaseModelPlanner(BasePlanner):
             # Sanitize: remove None values for fields that have defaults
             # This allows Pydantic to use the default values instead of failing validation
             fields_with_defaults = {"confidence", "selected_tool_args", "selected_tool_name", 
-                                    "selected_audio_id", "draft_answer"}
+                                    "selected_audio_id", "selected_image_id", "draft_answer"}
             sanitized_output = {
                 k: v for k, v in raw_output.items() 
                 if v is not None or k not in fields_with_defaults
@@ -566,10 +632,21 @@ class BaseModelPlanner(BasePlanner):
             details={"output_type": type(raw_output).__name__, "raw_output": str(raw_output)[:1000]},
         )
 
-    def plan(self, question: str, frontend_output: FrontendOutput | None = None) -> InitialPlan:
+    def plan(
+        self,
+        question: str,
+        frontend_output: FrontendOutput | None = None,
+        available_tools: list[ToolSpec] | None = None,
+        image_list: list[ImageItem] | None = None,
+    ) -> InitialPlan:
         """Question-and-caption initial planning phase."""
         question = self.validate_question(question)
-        model_input = self.build_plan_model_input(question, frontend_output)
+        model_input = self.build_plan_model_input(
+            question,
+            frontend_output,
+            available_tools,
+            image_list,
+        )
 
         def _call():
             try:

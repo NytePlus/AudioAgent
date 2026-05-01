@@ -1,0 +1,32 @@
+name: external_memory
+description: "Dummy external memory retriever that returns history transcript text supplied at launch."
+version: "1.0.0"
+author: "Audio Agent Team"
+tags: ["memory", "retrieval", "history", "dummy"]
+
+server:
+  command: ["python", "server.py"]
+  working_dir: "."
+  env: {}
+  resources:
+    memory_gb: 1
+    gpu: false
+    cpu_cores: 1
+  lifecycle: "session"
+  startup_timeout_sec: 30
+
+tools:
+  - name: "external_memory_retrieve"
+    description: "Retrieve historical transcript memory supplied to this run."
+    input_schema:
+      type: object
+      properties:
+        query:
+          type: string
+          description: "Optional retrieval query; ignored by the dummy backend."
+          default: ""
+        top_k:
+          type: integer
+          description: "Optional number of memories to return; ignored by the dummy backend."
+          default: 1
+      required: []

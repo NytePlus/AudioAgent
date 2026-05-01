@@ -4,8 +4,11 @@
 # This intentionally skips local model/GPU tools that install torch or large
 # speech models. It installs the core package with API support and only the
 # lightweight MCP tools:
+#   - external_memory (dummy retrieval)
 #   - ffmpeg
+#   - image_qa (API-based)
 #   - image_captioner
+#   - kw_verify (API-based)
 #   - librosa
 #   - omni_captioner (API-based)
 #   - qwen3_asr_flash (API-based)
@@ -20,7 +23,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CATALOG_DIR="$SCRIPT_DIR/audio_agent/tools/catalog"
-TOOLS=(ffmpeg image_captioner librosa omni_captioner qwen3_asr_flash qwen_vl_ocr)
+TOOLS=(external_memory ffmpeg image_qa image_captioner kw_verify librosa omni_captioner qwen3_asr_flash qwen_vl_ocr)
 
 VERIFY=false
 CORE_ONLY=false

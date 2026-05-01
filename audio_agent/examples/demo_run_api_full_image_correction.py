@@ -3,8 +3,8 @@
 Demo script for image-guided audio transcription correction.
 
 This demo extends the full API mode flow:
-- Analyze one or more images with Qwen VL OCR and Qwen Omni image captioning
-- Inject the extracted image context into the audio question
+- Registers Qwen VL OCR and Qwen Omni image captioning tools
+- Passes images to the agent as first-class `image_0`, `image_1`, ... inputs
 - Run the audio agent with API frontend + API planner
 
 Use this when screenshots, slides, menus, labels, lyric sheets, or document images
@@ -27,7 +27,6 @@ if str(project_root) not in sys.path:
 from audio_agent.config.settings import AgentConfig
 from audio_agent.core.constants import AgentStatus
 from audio_agent.core.logging import setup_logger, set_debug_mode
-from audio_agent.core.schemas import ToolCallRequest
 from audio_agent.examples.demo_run_api_full import (
     LOCAL_MODEL_TOOL_NAMES,
     print_evidence_log,
@@ -41,7 +40,6 @@ from audio_agent.fusion.default_fuser import DefaultEvidenceFuser
 from audio_agent.main import AudioAgent
 from audio_agent.planner.openai_compatible_planner import OpenAICompatiblePlanner
 from audio_agent.tools.catalog import list_available_tools, register_all_mcp_tools
-from audio_agent.tools.executor import ToolExecutor
 from audio_agent.tools.mcp import MCPServerManager
 from audio_agent.tools.registry import ToolRegistry
 from audio_agent.utils.audio_path import resolve_audio_input_paths
@@ -53,8 +51,8 @@ def build_parser() -> argparse.ArgumentParser:
     """Build command-line parser for the demo."""
     parser = argparse.ArgumentParser(
         description=(
-            "Run the full API audio agent with image OCR/caption context to correct "
-            "speech recognition mistakes."
+            "Run the full API audio agent with first-class reference images for "
+            "OCR/caption-guided speech recognition correction."
         )
     )
     parser.add_argument(
@@ -73,22 +71,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--question",
         default="Transcribe what is being said. Use the image context to correct likely ASR mistakes.",
         help="Question to ask about the audio.",
-    )
-    parser.add_argument(
-        "--ocr-prompt",
-        default=(
-            "Extract all readable text from this image. Preserve proper nouns, numbers, "
-            "line breaks, labels, and any terms that may be spoken in the audio."
-        ),
-        help="Prompt for the OCR tool.",
-    )
-    parser.add_argument(
-        "--caption-prompt",
-        default=(
-            "Describe this image with emphasis on objects, scene context, visible text, "
-            "people, slides, diagrams, labels, and terms that could help correct audio transcription."
-        ),
-        help="Prompt for the image captioning tool.",
     )
     parser.add_argument(
         "--frontend-model",
@@ -176,80 +158,6 @@ def select_tool_servers(args: argparse.Namespace) -> tuple[list[str], list[str]]
     return selected, excluded
 
 
-async def analyze_images(
-    registry: ToolRegistry,
-    image_paths: list[str],
-    ocr_prompt: str,
-    caption_prompt: str,
-) -> str:
-    """Run OCR and caption tools for each image and return formatted context."""
-    executor = ToolExecutor(registry)
-    sections: list[str] = []
-
-    for index, image_path in enumerate(image_paths, 1):
-        print(f"\nAnalyzing image {index}: {image_path}")
-
-        ocr_result = await executor.execute(
-            ToolCallRequest(
-                tool_name="qwen_vl_ocr",
-                args={"image_path": image_path, "prompt": ocr_prompt},
-            )
-        )
-        caption_result = await executor.execute(
-            ToolCallRequest(
-                tool_name="image_caption",
-                args={"image_path": image_path, "prompt": caption_prompt},
-            )
-        )
-
-        ocr_text = (
-            ocr_result.output.get("text", "").strip()
-            if ocr_result.success
-            else f"OCR failed: {ocr_result.error_message}"
-        )
-        caption_text = (
-            caption_result.output.get("text", "").strip()
-            if caption_result.success
-            else f"Image caption failed: {caption_result.error_message}"
-        )
-
-        sections.append(
-            "\n".join(
-                [
-                    f"## Image {index}: {image_path}",
-                    "",
-                    "### OCR text",
-                    ocr_text or "(empty)",
-                    "",
-                    "### Visual caption",
-                    caption_text or "(empty)",
-                ]
-            )
-        )
-
-    return "\n\n".join(sections)
-
-
-def build_image_guided_question(original_question: str, image_context: str) -> str:
-    """Inject image context into the user question for audio transcription correction."""
-    return f"""You are answering an audio question with additional image context.
-
-Original user question:
-{original_question}
-
-Image-derived context:
-{image_context}
-
-Instructions:
-- Use the audio as the primary evidence for what was spoken.
-- Use OCR text and visual context from the image to correct likely ASR mistakes, especially
-  proper nouns, technical terms, numbers, labels, slide text, menu items, and named entities.
-- Do not invent speech from the image alone. If the audio is unclear, say what is uncertain.
-- In the final answer, provide the corrected transcription or answer requested by the user,
-  and briefly mention the image cues used for correction when relevant.
-"""
-
-
 async def amain() -> int:
     """Run the demo."""
     parser = build_parser()
@@ -318,16 +226,9 @@ async def amain() -> int:
             print(f"\nMissing required image tools: {', '.join(sorted(missing_required))}")
             return 1
 
-        print_separator("Image Context Extraction")
-        image_context = await analyze_images(
-            registry=registry,
-            image_paths=image_paths,
-            ocr_prompt=args.ocr_prompt,
-            caption_prompt=args.caption_prompt,
-        )
-        print("\n" + image_context)
-
-        image_guided_question = build_image_guided_question(args.question, image_context)
+        print_separator("Image Inputs Registered")
+        for index, image_path in enumerate(image_paths):
+            print(f"- image_{index}: {image_path}")
 
         agent = AudioAgent(
             frontend=frontend,
@@ -343,9 +244,10 @@ async def amain() -> int:
         print(f"Image paths: {image_paths}")
 
         final_state = await agent.arun(
-            question=image_guided_question,
+            question=args.question,
             audio_paths=audio_paths,
             max_steps=args.max_steps,
+            image_paths=image_paths,
         )
 
     except Exception as exc:

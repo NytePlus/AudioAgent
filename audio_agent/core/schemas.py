@@ -120,6 +120,33 @@ class AudioItem(BaseModel):
         return self
 
 
+class ImageItem(BaseModel):
+    """
+    Represents an image file available to the agent.
+
+    Tracks original input images copied into the run temp directory so planners
+    and tools can refer to them by stable IDs instead of raw file paths.
+    """
+    image_id: str = Field(..., description="Unique identifier (e.g., image_0, image_1)")
+    path: str = Field(..., description="Path to the image file")
+    source: str = Field(..., description="Source: 'original' or tool name that generated it")
+    description: str = Field(..., description="Human-readable description of what this image represents")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+    timestamp: datetime = Field(default_factory=datetime.now)
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def validate_image_item(self) -> "ImageItem":
+        """Fail-fast validation for image item."""
+        if not self.image_id.strip():
+            raise ValueError("image_id must be non-empty")
+        if not self.path.strip():
+            raise ValueError("path must be non-empty")
+        if not self.description.strip():
+            raise ValueError("description must be non-empty")
+        return self
+
+
 # =============================================================================
 # Tool Schemas
 # =============================================================================
@@ -204,6 +231,36 @@ class ExecutionStep(BaseModel):
         return self
 
 
+class PlannedToolCall(BaseModel):
+    """
+    Concrete tool call selected during initial planning for parallel execution.
+
+    Unlike ExecutionStep, this is executable: tool_name must match a registered
+    tool and tool_args must use that tool's input schema.
+    """
+    step_number: int = Field(..., ge=1, description="Plan step order for traceability")
+    tool_name: str = Field(..., min_length=1, description="Concrete registered tool name")
+    tool_args: dict[str, Any] = Field(default_factory=dict, description="Arguments for the tool")
+    audio_id: str | None = Field(default=None, description="Audio ID to process, e.g. audio_0")
+    image_id: str | None = Field(default=None, description="Image ID to process, e.g. image_0")
+    rationale: str | None = Field(default=None, description="Why this tool call is useful")
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def validate_planned_tool_call(self) -> "PlannedToolCall":
+        """Fail-fast validation for executable initial tool calls."""
+        if not self.tool_name.strip():
+            raise ValueError("PlannedToolCall.tool_name must be non-empty")
+        if self.audio_id is not None and not self.audio_id.strip():
+            raise ValueError("PlannedToolCall.audio_id cannot be empty when provided")
+        if self.image_id is not None and not self.image_id.strip():
+            raise ValueError("PlannedToolCall.image_id cannot be empty when provided")
+        if self.rationale is not None and not self.rationale.strip():
+            raise ValueError("PlannedToolCall.rationale cannot be empty when provided")
+        return self
+
+
 class InitialPlan(BaseModel):
     """
     Initial high-level plan generated from the question only.
@@ -238,6 +295,13 @@ class InitialPlan(BaseModel):
         default_factory=list,
         description="Optional todo list for complex questions. Leave empty for simple questions.",
     )
+    planned_tool_calls: list[PlannedToolCall] = Field(
+        default_factory=list,
+        description=(
+            "Concrete independent tool calls to execute in parallel immediately after "
+            "initial planning. Leave empty when no independent tools are needed."
+        ),
+    )
     timestamp: datetime = Field(default_factory=datetime.now)
     model_config = {"extra": "forbid"}
 
@@ -260,7 +324,7 @@ class PlannerDecision(BaseModel):
     Decision made by the planner.
     
     Validation ensures consistency:
-    - CALL_TOOL requires selected_tool_name and selected_audio_id
+    - CALL_TOOL requires selected_tool_name
     - ANSWER no longer requires draft_answer (the frontend model generates the final answer)
     """
     action: PlannerActionType
@@ -269,7 +333,11 @@ class PlannerDecision(BaseModel):
     selected_tool_args: dict[str, Any] = Field(default_factory=dict)
     selected_audio_id: str | None = Field(
         default=None,
-        description="Audio ID to use for tool call (required for CALL_TOOL)"
+        description="Audio ID to use for audio tool calls"
+    )
+    selected_image_id: str | None = Field(
+        default=None,
+        description="Image ID to use for image tool calls"
     )
     draft_answer: str | None = Field(default=None)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -283,10 +351,6 @@ class PlannerDecision(BaseModel):
             if not self.selected_tool_name:
                 raise ValueError(
                     "PlannerDecision with action=CALL_TOOL must have non-empty selected_tool_name"
-                )
-            if not self.selected_audio_id:
-                raise ValueError(
-                    "PlannerDecision with action=CALL_TOOL must have non-empty selected_audio_id"
                 )
         # ANSWER no longer requires draft_answer (frontend generates final answer)
         # CLARIFY_INTENT and FAIL require no additional fields - uses rationale only

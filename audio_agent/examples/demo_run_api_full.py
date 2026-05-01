@@ -36,6 +36,7 @@ import argparse
 import asyncio
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 # Add project root to path for direct execution
@@ -210,6 +211,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="List available tools and exit",
     )
+    parser.add_argument(
+        "--external-memory-text",
+        default=None,
+        help="History transcript text exposed by the dummy external_memory_retrieve tool.",
+    )
+    parser.add_argument(
+        "--external-memory-path",
+        default=None,
+        help="Path to history transcript text exposed by the dummy external_memory_retrieve tool.",
+    )
     return parser
 
 
@@ -225,6 +236,9 @@ async def amain() -> int:
         return 0
     
     args = parser.parse_args()
+    memory_temp_path: str | None = None
+    previous_memory_path = os.environ.get("EXTERNAL_MEMORY_PATH")
+    previous_memory_text = os.environ.get("EXTERNAL_MEMORY_TEXT")
 
     if args.tools is not None:
         selected_tools = args.tools
@@ -259,6 +273,16 @@ async def amain() -> int:
     if not api_key:
         print("Error: API key required. Provide via --api-key or set DASHSCOPE_API_KEY / OPENAI_API_KEY environment variable.")
         return 1
+
+    if args.external_memory_path:
+        os.environ["EXTERNAL_MEMORY_PATH"] = args.external_memory_path
+        os.environ.pop("EXTERNAL_MEMORY_TEXT", None)
+    elif args.external_memory_text is not None:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt", delete=False) as handle:
+            handle.write(args.external_memory_text)
+            memory_temp_path = handle.name
+        os.environ["EXTERNAL_MEMORY_PATH"] = memory_temp_path
+        os.environ["EXTERNAL_MEMORY_TEXT"] = args.external_memory_text
     
     # Set up logging
     setup_logger()
@@ -356,6 +380,19 @@ async def amain() -> int:
         # Clean up MCP servers
         print("\nShutting down MCP servers...")
         await server_manager.shutdown_all()
+        if previous_memory_path is None:
+            os.environ.pop("EXTERNAL_MEMORY_PATH", None)
+        else:
+            os.environ["EXTERNAL_MEMORY_PATH"] = previous_memory_path
+        if previous_memory_text is None:
+            os.environ.pop("EXTERNAL_MEMORY_TEXT", None)
+        else:
+            os.environ["EXTERNAL_MEMORY_TEXT"] = previous_memory_text
+        if memory_temp_path:
+            try:
+                Path(memory_temp_path).unlink()
+            except OSError:
+                pass
      
     # Print results
     print_separator("Results")

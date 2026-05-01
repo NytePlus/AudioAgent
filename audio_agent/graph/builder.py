@@ -11,6 +11,7 @@ from audio_agent.graph.nodes import (
     create_initial_prompt_node,
     create_frontend_evidence_node,
     create_initial_plan_node,
+    create_parallel_initial_tools_node,
     create_planner_decision_node,
     create_tool_executor_node,
     create_evidence_fusion_node,
@@ -30,6 +31,7 @@ from audio_agent.graph.routing import (
     NODE_EVIDENCE_FUSION,
     NODE_INITIAL_PROMPT,
     NODE_INITIAL_PLAN,
+    NODE_PARALLEL_INITIAL_TOOLS,
     NODE_PLANNER_DECISION,
     NODE_INTENT_CLARIFICATION,
     NODE_EVIDENCE_SUMMARIZATION,
@@ -92,7 +94,8 @@ def build_graph(
     initial_prompt_node_fn = create_initial_prompt_node(planner)
     initial_prompt_node_fn = create_initial_prompt_node(planner)
     frontend_node = create_frontend_evidence_node(frontend)
-    initial_plan_node_fn = create_initial_plan_node(planner)
+    initial_plan_node_fn = create_initial_plan_node(planner, registry)
+    parallel_initial_tools_node_fn = create_parallel_initial_tools_node(executor, fuser, registry)
     planner_decision_node_fn = create_planner_decision_node(planner, registry)
     tool_executor_node_fn = create_tool_executor_node(executor)
     evidence_fusion_node_fn = create_evidence_fusion_node(fuser)
@@ -108,6 +111,7 @@ def build_graph(
     graph.add_node(NODE_INITIAL_PROMPT, initial_prompt_node_fn)
     graph.add_node("frontend_evidence_node", frontend_node)
     graph.add_node(NODE_INITIAL_PLAN, initial_plan_node_fn)
+    graph.add_node(NODE_PARALLEL_INITIAL_TOOLS, parallel_initial_tools_node_fn)
     graph.add_node(NODE_PLANNER_DECISION, planner_decision_node_fn)
     graph.add_node(NODE_TOOL_EXECUTOR, tool_executor_node_fn)
     graph.add_node(NODE_EVIDENCE_FUSION, evidence_fusion_node_fn)
@@ -128,8 +132,9 @@ def build_graph(
     # frontend_evidence_node -> initial_plan_node
     graph.add_edge("frontend_evidence_node", NODE_INITIAL_PLAN)
     
-    # initial_plan_node -> planner_decision_node
-    graph.add_edge(NODE_INITIAL_PLAN, NODE_PLANNER_DECISION)
+    # initial_plan_node -> parallel_initial_tools_node -> planner_decision_node
+    graph.add_edge(NODE_INITIAL_PLAN, NODE_PARALLEL_INITIAL_TOOLS)
+    graph.add_edge(NODE_PARALLEL_INITIAL_TOOLS, NODE_PLANNER_DECISION)
     
     # planner_decision_node -> conditional routing
     # Note: ANSWER now routes to format_check_node first (mandatory format check)
@@ -214,7 +219,8 @@ def build_graph_with_config(
     
     initial_prompt_node_fn = create_initial_prompt_node(planner)
     frontend_node = create_frontend_evidence_node(frontend)
-    initial_plan_node_fn = create_initial_plan_node(planner)
+    initial_plan_node_fn = create_initial_plan_node(planner, registry)
+    parallel_initial_tools_node_fn = create_parallel_initial_tools_node(executor, fuser, registry)
     planner_decision_node_fn = create_planner_decision_node(planner, registry)
     tool_executor_node_fn = create_tool_executor_node(executor)
     evidence_fusion_node_fn = create_evidence_fusion_node(fuser)
@@ -228,6 +234,7 @@ def build_graph_with_config(
     graph.add_node(NODE_INITIAL_PROMPT, initial_prompt_node_fn)
     graph.add_node("frontend_evidence_node", frontend_node)
     graph.add_node(NODE_INITIAL_PLAN, initial_plan_node_fn)
+    graph.add_node(NODE_PARALLEL_INITIAL_TOOLS, parallel_initial_tools_node_fn)
     graph.add_node(NODE_PLANNER_DECISION, planner_decision_node_fn)
     graph.add_node(NODE_TOOL_EXECUTOR, tool_executor_node_fn)
     graph.add_node(NODE_EVIDENCE_FUSION, evidence_fusion_node_fn)
@@ -241,7 +248,8 @@ def build_graph_with_config(
     graph.add_edge(START, NODE_INITIAL_PROMPT)
     graph.add_edge(NODE_INITIAL_PROMPT, "frontend_evidence_node")
     graph.add_edge("frontend_evidence_node", NODE_INITIAL_PLAN)
-    graph.add_edge(NODE_INITIAL_PLAN, NODE_PLANNER_DECISION)
+    graph.add_edge(NODE_INITIAL_PLAN, NODE_PARALLEL_INITIAL_TOOLS)
+    graph.add_edge(NODE_PARALLEL_INITIAL_TOOLS, NODE_PLANNER_DECISION)
     
     graph.add_conditional_edges(
         NODE_PLANNER_DECISION,

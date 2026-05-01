@@ -1,0 +1,34 @@
+name: kw_verify
+description: "API-based audio keyword/text verification using an omni model."
+version: "1.0.0"
+author: "Audio Agent Team"
+tags: ["verification", "audio", "keyword", "qwen", "omni", "api"]
+
+server:
+  command: [".venv/bin/python", "server.py"]
+  working_dir: "."
+  env:
+    DASHSCOPE_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    DEFAULT_MODEL: "qwen3.5-omni-plus"
+    TEMPERATURE: "0.0"
+    MAX_TOKENS: "1024"
+  resources:
+    memory_gb: 1
+    gpu: false
+    cpu_cores: 1
+  lifecycle: "session"
+  startup_timeout_sec: 60
+
+tools:
+  - name: "kw_verify"
+    description: "Verify whether a target text, keyword, or phrase exists in the provided speech audio."
+    input_schema:
+      type: object
+      properties:
+        audio_path:
+          type: string
+          description: "Path to the audio file to inspect."
+        target_text:
+          type: string
+          description: "Target text, keyword, or phrase to verify in the audio."
+      required: ["audio_path", "target_text"]

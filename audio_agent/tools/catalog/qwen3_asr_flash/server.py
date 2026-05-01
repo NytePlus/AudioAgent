@@ -190,7 +190,6 @@ class Qwen3ASRFlashServer:
             "audio_path": result.audio_source,
             "text": result.transcript,
             "language": result.language,
-            "emotion": result.annotations.emotion,
             # "enable_itn": result.enable_itn,
             # "context_used": result.context_used,
             # "annotations": result.annotations,

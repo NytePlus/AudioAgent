@@ -27,17 +27,20 @@
    - First, identify what kind of evidence is missing to answer the question
    - Then, determine which capability family can provide that evidence (e.g., ASR for transcription, diarization for speaker separation, captioning for audio description)
    - Then, select the specific concrete tool from available_tools that matches the needed capability
-   - CRITICAL: You MUST specify selected_audio_id from Available Audio Files to tell the tool which audio to process
-   - Consider the description of each audio to choose the most appropriate one
+   - For audio tools, specify selected_audio_id from Available Audio Files to tell the tool which audio to process
+   - For image tools, specify selected_image_id from Available Images to tell the tool which image to process
+   - For non-media tools such as external_memory_retrieve, selected_audio_id and selected_image_id may both be null
+   - Consider the description of each media item to choose the most appropriate one
 3.5 **Tool Priority Rule:** When multiple tools of the same type are available, follow this priority order (higher = preferred):
    - **ASR Tools:** transcribe_qwen3_asr_flash
 4. If the intent or expected output format is unclear, use action='clarify_intent' to reason about it.
-5. action='call_tool' REQUIRES: selected_tool_name (non-empty), selected_audio_id (valid audio_id from Available Audio Files)
+5. action='call_tool' REQUIRES: selected_tool_name (non-empty). Media IDs are required only when the selected tool processes audio or images.
 5.5. **Tool Parameter Rule:** When using action='call_tool', you MUST:
    - Use the EXACT parameter names from the tool's input_schema (case-sensitive, no abbreviations)
    - For audio file parameters, use the audio_id (e.g., "audio_0", "audio_1") as the value - the system will resolve it to the actual file path
+   - For image file parameters, use the image_id (e.g., "image_0") as the value - the system will resolve it to the actual file path
    - Example: Use `"audio_path": "audio_0"` or `"enrollment_audio": "audio_1"` - NOT full file paths
-   - The system automatically resolves audio_ids to actual file paths with correct extensions
+   - The system automatically resolves audio_ids and image_ids to actual file paths with correct extensions
 6. action='answer' signals that the frontend model should generate the final answer. You do not need to provide draft_answer.
 7. action='clarify_intent' uses reasoning only - do not call tools.
 8. Do NOT use action='call_tool' if you are ready to answer - use action='answer' instead.

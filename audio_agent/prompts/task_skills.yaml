@@ -26,6 +26,15 @@ abstract_slots:
   omni_perception:
     contract: LALM question-guided caption or direct perceptual observation.
     current_catalog_defaults: ["omni_captioner.omni_caption"]
+  image_ocr:
+    contract: Extract readable text, labels, numbers, proper nouns, and domain terms from reference images.
+    current_catalog_defaults: ["qwen_vl_ocr"]
+  image_caption:
+    contract: Describe visual scene context, layout, objects, charts, slides, screenshots, and visible semantic cues.
+    current_catalog_defaults: ["image_caption"]
+  visual_keyword_semantics:
+    contract: Infer what visible keywords mean from image layout, surrounding text, and user/audio context.
+    current_catalog_defaults: ["qwen_vl_ocr", "image_caption"]
   beat_onset:
     contract: Tempo, beat positions, onset positions; not action counts by itself.
     current_catalog_defaults: ["librosa.analyze_beats", "librosa.analyze_onsets"]
@@ -100,6 +109,31 @@ skills:
       speech_asr:
         - tool: "qwen3_asr_flash.transcribe_qwen3_asr_flash"
           reference: "Current catalog API ASR tool with optional context biasing."
+
+  - id: multimodal.image_contextual_keyword_understanding
+    task: Identify keywords in reference images and infer their meaning from surrounding visual/text context, optionally using audio/question context.
+    intent_patterns: ["reference image", "image keyword", "OCR", "visual context", "slide text", "screenshot", "关键词", "图片", "术语", "专有名词"]
+    chain:
+      - slot: image_ocr
+      - slot: image_caption
+      - slot: visual_keyword_semantics
+      - slot: speech_asr
+        optional: true
+    guardrails:
+      - "Use image IDs (for example image_0) when calling image tools; do not invent file paths."
+      - "Use OCR text for visible keywords and the image caption for layout, scene, and semantic context."
+      - "Treat image evidence as context for interpreting terms, proper nouns, labels, numbers, and domain vocabulary."
+      - "Do not infer spoken content from the image alone; use audio evidence for what was said."
+    default_bindings_from_ref_flows:
+      image_ocr:
+        - tool: "qwen_vl_ocr"
+          reference: "Current catalog API OCR tool for extracting visible text from images."
+      image_caption:
+        - tool: "image_caption"
+          reference: "Current catalog API image captioner for visual context and scene understanding."
+      speech_asr:
+        - tool: "qwen3_asr_flash.transcribe_qwen3_asr_flash"
+          reference: "Use when audio speech must be aligned or corrected with image-derived keywords."
 
   - id: speech.dialogue_content_structure
     task: Understand dialogue events, turns, decisions, or conversational structure.

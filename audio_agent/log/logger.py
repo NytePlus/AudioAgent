@@ -25,6 +25,7 @@ from audio_agent.log.formatter import (
     format_evidence_summary,
     format_final_answer,
     format_audio_list,
+    format_image_list,
     format_frontend_final_answer,
     format_format_check_result,
     format_error,
@@ -162,7 +163,8 @@ class RunLogger:
             if old_path:
                 original_audios = [old_path]
         temp_dir = state.get("temp_dir", "Unknown")
-        sections.append(format_input_section(original_audios, temp_dir))
+        original_images = state.get("original_image_paths", [])
+        sections.append(format_input_section(original_audios, temp_dir, original_images))
         
         # Question-Oriented Prompt
         question_oriented_prompt = state.get("question_oriented_prompt")
@@ -207,6 +209,10 @@ class RunLogger:
         # Audio Files
         audio_list = state.get("audio_list", [])
         sections.append(format_audio_list(audio_list))
+
+        # Image Files
+        image_list = state.get("image_list", [])
+        sections.append(format_image_list(image_list))
         
         # Errors
         error_message = state.get("error_message")

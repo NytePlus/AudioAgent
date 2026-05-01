@@ -11,7 +11,7 @@ from pathlib import Path
 
 from audio_agent.core.state import AgentState, create_initial_state
 from audio_agent.core.constants import AgentStatus
-from audio_agent.core.schemas import FinalAnswer, AudioItem, AudioOutput
+from audio_agent.core.schemas import FinalAnswer, AudioItem, ImageItem, AudioOutput
 from audio_agent.core.logging import setup_logger, set_debug_mode, log_info
 from audio_agent.config.settings import AgentConfig
 from audio_agent.graph.builder import build_graph
@@ -77,18 +77,23 @@ class AudioAgent:
         if self.config.enable_run_logging:
             self._run_logger = RunLogger(log_dir=self.config.log_dir)
     
-    def _setup_temp_dir(self, audio_paths: list[str]) -> tuple[str, list[AudioItem]]:
+    def _setup_temp_dir(
+        self,
+        audio_paths: list[str],
+        image_paths: list[str] | None = None,
+    ) -> tuple[str, list[AudioItem], list[ImageItem]]:
         """
-        Create temp directory and copy original audio(s).
+        Create temp directory and copy original audio/image inputs.
         
         Creates a temp directory at {temp_dir_base}/agent_{timestamp}_{random}/
         and copies the original audio(s) as audio_0, audio_1, etc.
         
         Args:
             audio_paths: List of paths to the original audio files
+            image_paths: Optional list of paths to the original image files
             
         Returns:
-            Tuple of (temp_dir_path, audio_list)
+            Tuple of (temp_dir_path, audio_list, image_list)
         """
         import random
         import string
@@ -119,9 +124,25 @@ class AudioAgent:
                 description=f"input audio {i}",
             )
             audio_list.append(audio_item)
+
+        # Copy all original images
+        image_list: list[ImageItem] = []
+        for i, image_path in enumerate(image_paths or []):
+            original_ext = Path(image_path).suffix or ".png"
+            dest_path = os.path.join(temp_dir, f"image_{i}{original_ext}")
+            shutil.copy2(image_path, dest_path)
+            log_info("image_copied", {"source": image_path, "dest": dest_path})
+
+            image_item = ImageItem(
+                image_id=f"image_{i}",
+                path=dest_path,
+                source="original",
+                description=f"input image {i}",
+            )
+            image_list.append(image_item)
         
         self._temp_dir = temp_dir
-        return temp_dir, audio_list
+        return temp_dir, audio_list, image_list
     
     def cleanup(self, temp_dir: str | None = None) -> None:
         """
@@ -207,6 +228,7 @@ class AudioAgent:
         question: str,
         audio_paths: list[str],
         max_steps: int | None = None,
+        image_paths: list[str] | None = None,
     ) -> AgentState:
         """
         Run the agent on an audio query (synchronous).
@@ -215,13 +237,14 @@ class AudioAgent:
             question: User question about the audio
             audio_paths: List of paths to audio files (one or more)
             max_steps: Override default max_steps
+            image_paths: Optional list of paths to reference images
         
         Returns:
             Final agent state with answer or error
         """
         import asyncio
         # Use asyncio.run to execute the async version
-        return asyncio.run(self.arun(question, audio_paths, max_steps))
+        return asyncio.run(self.arun(question, audio_paths, max_steps, image_paths=image_paths))
     
     async def arun(
         self,
@@ -229,6 +252,7 @@ class AudioAgent:
         audio_paths: list[str],
         max_steps: int | None = None,
         run_log_name: str | None = None,
+        image_paths: list[str] | None = None,
     ) -> AgentState:
         """
         Run the agent on an audio query (asynchronous).
@@ -239,6 +263,7 @@ class AudioAgent:
             question: User question about the audio
             audio_paths: List of paths to audio files (one or more)
             max_steps: Override default max_steps
+            image_paths: Optional list of paths to reference images
         
         Returns:
             Final agent state with answer or error
@@ -246,15 +271,17 @@ class AudioAgent:
         effective_max_steps = max_steps if max_steps is not None else self.config.max_steps
         
         # Setup directories
-        temp_dir, audio_list = self._setup_temp_dir(audio_paths)
+        temp_dir, audio_list, image_list = self._setup_temp_dir(audio_paths, image_paths)
         self._setup_output_dir()
         
         initial_state = create_initial_state(
             question=question,
             audio_paths=audio_paths,
+            image_paths=image_paths,
             max_steps=effective_max_steps,
             temp_dir=temp_dir,
             audio_list=audio_list,
+            image_list=image_list,
         )
         
         try:

@@ -41,7 +41,13 @@ class DummyPlanner(BasePlanner):
             f"Tasks: 1) Listen for content relevant to the question, 2) Form an initial hypothesis, 3) List uncertainties that need verification."
         )
 
-    def plan(self, question: str, frontend_output=None) -> InitialPlan:
+    def plan(
+        self,
+        question: str,
+        frontend_output=None,
+        available_tools: list[ToolSpec] | None = None,
+        image_list=None,
+    ) -> InitialPlan:
         """Produce deterministic initial plan from question and optional frontend caption."""
         question = self.validate_question(question)
         

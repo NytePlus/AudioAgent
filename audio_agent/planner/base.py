@@ -8,7 +8,14 @@ based on accumulated evidence and available tools.
 from abc import ABC, abstractmethod
 
 from audio_agent.core.state import AgentState
-from audio_agent.core.schemas import FrontendOutput, InitialPlan, PlannerDecision, ToolSpec, FormatCheckResult
+from audio_agent.core.schemas import (
+    FrontendOutput,
+    ImageItem,
+    InitialPlan,
+    PlannerDecision,
+    ToolSpec,
+    FormatCheckResult,
+)
 from audio_agent.core.errors import PlannerError
 
 
@@ -33,13 +40,21 @@ class BasePlanner(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def plan(self, question: str, frontend_output: FrontendOutput | None = None) -> InitialPlan:
+    def plan(
+        self,
+        question: str,
+        frontend_output: FrontendOutput | None = None,
+        available_tools: list[ToolSpec] | None = None,
+        image_list: list[ImageItem] | None = None,
+    ) -> InitialPlan:
         """
         Build an initial plan using question and optional frontend caption.
 
         Args:
             question: User question
             frontend_output: Optional frontend output with question-guided caption
+            available_tools: Optional concrete tools available for executable initial calls
+            image_list: Optional reference images available for image-aware planning
 
         Returns:
             InitialPlan

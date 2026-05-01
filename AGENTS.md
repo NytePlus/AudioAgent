@@ -18,7 +18,8 @@ The Audio Agent Framework is a **LangGraph-based framework for audio understandi
 START
   -> initial_prompt_node (planner generates question-oriented prompt from task skills)
   -> frontend_evidence_node (LALM processes audio using question-oriented prompt, generates structured caption evidence)
-  -> initial_plan_node (audio-aware planning using question + frontend caption, generates approach and focus points)
+  -> initial_plan_node (audio-aware planning using question + frontend caption, may emit parallel planned_tool_calls)
+  -> parallel_initial_tools_node (runs independent planned_tool_calls concurrently, fuses evidence)
   -> planner_decision_node (LLM decides action; on last step forces ANSWER)
   -> [conditional routing based on decision]
      - ANSWER -> final_answer_node (frontend omni model generates answer from audio + context)
@@ -35,8 +36,9 @@ START
 **Key Behaviors:**
 - **Initial Prompt Generation**: A dedicated `initial_prompt_node` uses the planner (text LLM) to craft a customized `question_oriented_prompt` from the user question, referencing `task_oriented_caption_skill.md`. This prompt guides the frontend model.
 - **Frontend Evidence**: The `frontend_evidence_node` feeds the `question_oriented_prompt` to the LALM, which produces a richer, structured `question_guided_caption` containing: (1) general caption, (2) focus point, (3) proposed answer + confidence, and (4) uncertainties / verification needs.
-- **Initial Planning**: Planner's `plan()` method generates a high-level approach using both the question and the frontend's structured caption, enabling audio-aware planning
-- **Tool Execution**: Tool executor automatically resolves `audio_id` references to actual paths and injects audio paths for tools that need them
+- **Initial Planning**: Planner's `plan()` method generates a high-level approach using both the question and the frontend's structured caption, enabling audio-aware planning. It may also emit `planned_tool_calls`, a concrete queue of independent evidence-gathering tool calls.
+- **Parallel Initial Tools**: `parallel_initial_tools_node` executes `InitialPlan.planned_tool_calls` concurrently before the iterative planner loop. It appends tool call history, fuses all results into `evidence_log`, and then routes to `planner_decision_node`. Dependent or audio-generating tool chains should stay in the normal planner loop.
+- **Tool Execution**: Tool executor automatically resolves `audio_id` and `image_id` references to actual paths and injects media paths for tools that need them
 - **Intent Clarification**: When planner returns CLARIFY action, the intent_clarification_node refines the question before continuing
 - **Frontend Final Answer**: When the planner returns ANSWER (or is forced on the final step), the `final_answer_node` invokes the frontend (audio-capable) model with all original audio files and accumulated context to generate the final answer.
 - **Format Checking**: Mandatory format validation occurs before final answer. The planner (text LLM) checks if the proposed answer follows the expected output format. If format violations are found, the critique is added as evidence and planning continues.
@@ -132,8 +134,11 @@ audio_agent/
 │       ├── asr_qwen3/        # Qwen3-ASR-1.7B speech recognition
 │       ├── qwen3_asr_flash/  # Qwen3-ASR-Flash speech recognition (API)
 │       ├── diarizen/         # Speaker diarization tool
+│       ├── external_memory/  # Dummy history transcript retrieval
 │       ├── ffmpeg/           # Audio processing with FFmpeg
 │       ├── image_captioner/  # Qwen Omni Flash image captioning (API)
+│       ├── image_qa/         # Vision-language image question answering (API)
+│       ├── kw_verify/        # Omni audio keyword/text verification (API)
 │       ├── librosa/          # Audio analysis with librosa
 │       ├── omni_captioner/   # Qwen3-Omni captioner (API)
 │       ├── qwen_vl_ocr/      # Qwen VL OCR (API)
@@ -307,6 +312,8 @@ cd audio_agent/tools/catalog/diarizen && ./setup.sh && cd -
 cd audio_agent/tools/catalog/omni_captioner && ./setup.sh && cd -
 cd audio_agent/tools/catalog/qwen_vl_ocr && ./setup.sh && cd -
 cd audio_agent/tools/catalog/image_captioner && ./setup.sh && cd -
+cd audio_agent/tools/catalog/image_qa && ./setup.sh && cd -
+cd audio_agent/tools/catalog/kw_verify && ./setup.sh && cd -
 
 # 3. Verify a specific tool
 cd audio_agent/tools/catalog/asr_qwen3 && ./test_env.sh
@@ -621,7 +628,7 @@ All prompts are externalized as markdown files in `audio_agent/prompts/`. This a
 | `format_check_user.md` | Format check: user instruction template | `{question}`, `{expected_format}`, `{proposed_answer}` |
 | `evidence_summary_system.md` | Evidence summarization system prompt | None |
 | `evidence_summary_user.md` | Evidence summarization user instruction | `{question}`, `{frontend_caption}`, `{evidence_text}`, `{planner_trace_text}`, `{tool_history_text}`, `{clarified_intent}`, `{expected_output_format}` |
-| `task_skills.yaml` | Task skill reference for initial planning | Rendered as markdown cookbook |
+| `task_skills.yaml` | Task skill reference for initial planning | Rendered as markdown cookbook with slot contracts and suggested concrete tools |
 
 **Loading Prompts:**
 
@@ -807,13 +814,15 @@ validate_state_has_fields(
 
 2. **Multi-Audio Support**: The framework supports processing multiple audio files in a single run. Use `audio_paths: list[str]` instead of a single path. Each audio is assigned an ID (`audio_0`, `audio_1`, etc.) for tool reference. This enables speaker verification, audio comparison, and other multi-source analysis tasks.
 
+3. **Image Input Support**: The framework supports optional reference images via `image_paths` on `AudioAgent.run()` / `AudioAgent.arun()`. Images are copied into the run temp directory and tracked in `image_list` with IDs (`image_0`, `image_1`, etc.). Planner prompts expose available image IDs, and image tools such as `qwen_vl_ocr` and `image_caption` should be called with those IDs rather than raw paths.
+
 3. **Transformers Version**: Must install transformers from GitHub source for Qwen2-Audio support: `pip install git+https://github.com/huggingface/transformers`
 
 4. **MCP Tools**: The framework supports MCP (Model Context Protocol) tools that run in isolated processes. Each tool has its own `setup.sh` and `test_env.sh` for environment management. Use `./verify_all_tools.sh` to bulk-verify all tools.
 
 5. **Async Support**: When using MCP tools, use `agent.arun()` instead of `agent.run()` for asynchronous execution.
 
-6. **Planner/Tools Status**: Core architecture is complete with real Qwen2.5 planner. Tools include both dummy implementations and real MCP-based tools (asr_qwen3, qwen3_asr_flash, diarizen, omni_captioner, image_captioner, qwen_vl_ocr, ffmpeg, librosa, snakers4_silero-vad).
+6. **Planner/Tools Status**: Core architecture is complete with real Qwen2.5 planner. Tools include both dummy implementations and real MCP-based tools (asr_qwen3, qwen3_asr_flash, diarizen, external_memory, omni_captioner, image_captioner, image_qa, kw_verify, qwen_vl_ocr, ffmpeg, librosa, snakers4_silero-vad).
 
 7. **Prompt System**: All prompts are externalized in `audio_agent/prompts/` as markdown files. The system uses `load_prompt()` from `audio_agent/utils/prompt_io.py` to load prompts at runtime. This enables easy customization without code changes.
 
@@ -828,6 +837,7 @@ validate_state_has_fields(
     - `planner_trace` - all previous planner decisions
     - `tool_call_history` - record of all tool invocations
     - `initial_plan`, `clarified_intent`, `expected_output_format`
+    - `audio_list` and `image_list`
     - `format_critique` - if a previous format check failed
 
 12. **Format Checking**: Mandatory format validation occurs before final answer. The planner (text LLM) checks if the proposed answer follows the expected output format (from `initial_plan.expected_output_format`). This is different from answer generation:

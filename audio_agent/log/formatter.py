@@ -29,7 +29,11 @@ def format_metadata(
     return "\n".join(lines)
 
 
-def format_input_section(original_audios: list[str], temp_dir: str) -> str:
+def format_input_section(
+    original_audios: list[str],
+    temp_dir: str,
+    original_images: list[str] | None = None,
+) -> str:
     """Format input section as Markdown."""
     lines = [
         "## Input",
@@ -49,6 +53,14 @@ def format_input_section(original_audios: list[str], temp_dir: str) -> str:
         lines.append(f"- **Original Audio**: {original_audios}")
     else:
         lines.append(f"- **Original Audio**: Unknown")
+
+    if original_images:
+        if len(original_images) == 1:
+            lines.append(f"- **Original Image**: {original_images[0]}")
+        else:
+            lines.append(f"- **Original Images** ({len(original_images)} files):")
+            for i, image_path in enumerate(original_images):
+                lines.append(f"  - image_{i}: {image_path}")
     
     lines.append(f"- **Temp Directory**: {temp_dir}")
     lines.append("")
@@ -146,6 +158,26 @@ def format_initial_plan(plan: Any) -> str:
             
             lines.append(f"| {step_num} | {description} | {tool_type} | {expected} |")
         
+        lines.append("")
+
+    planned_tool_calls = getattr(plan, 'planned_tool_calls', [])
+    if planned_tool_calls:
+        lines.append("### Planned Parallel Tool Calls")
+        lines.append("")
+        lines.append("| Step | Tool | Audio ID | Image ID | Args | Rationale |")
+        lines.append("|------|------|----------|----------|------|-----------|")
+
+        for call in planned_tool_calls:
+            step_num = getattr(call, 'step_number', 0)
+            tool_name = str(getattr(call, 'tool_name', '')).replace('|', '\\|')[:60]
+            audio_id = str(getattr(call, 'audio_id', '')).replace('|', '\\|')[:20]
+            image_id = str(getattr(call, 'image_id', '')).replace('|', '\\|')[:20]
+            tool_args = str(getattr(call, 'tool_args', {})).replace('|', '\\|')[:80]
+            rationale = str(getattr(call, 'rationale', '') or '-').replace('|', '\\|')[:80]
+            lines.append(
+                f"| {step_num} | {tool_name} | {audio_id} | {image_id} | {tool_args} | {rationale} |"
+            )
+
         lines.append("")
     
     return "\n".join(lines)
@@ -375,6 +407,33 @@ def format_audio_list(audio_list: list[Any]) -> str:
         
         lines.append(f"| {audio_id} | {source} | {path} | {description} |")
     
+    lines.append("")
+    return "\n".join(lines)
+
+
+def format_image_list(image_list: list[Any]) -> str:
+    """Format image list as Markdown table."""
+    if not image_list:
+        return "## Image Files\n\n*No image files*\n\n"
+
+    lines = [
+        "## Image Files",
+        "",
+        "| ID | Source | Path | Description |",
+        "|------|--------|------|-------------|",
+    ]
+
+    for image in image_list:
+        image_id = getattr(image, 'image_id', 'Unknown')
+        source = getattr(image, 'source', 'Unknown')
+        path = getattr(image, 'path', 'Unknown')
+        description = getattr(image, 'description', '')
+
+        path = path.replace('|', '\\|')
+        description = description.replace('|', '\\|')
+
+        lines.append(f"| {image_id} | {source} | {path} | {description} |")
+
     lines.append("")
     return "\n".join(lines)
 

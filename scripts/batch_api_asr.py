@@ -56,6 +56,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-steps", type=int, default=10)
     parser.add_argument("--limit", type=int, default=None, help="Optional limit for smoke tests.")
     parser.add_argument("--no-progress", action="store_true", help="Disable the tqdm progress bar.")
+    parser.add_argument(
+        "--history-field",
+        default="history",
+        help=(
+            "JSONL field containing historical transcript text for the dummy external "
+            "memory tool. Set empty to disable field lookup."
+        ),
+    )
+    parser.add_argument(
+        "--history-file",
+        default=None,
+        help=(
+            "Optional JSONL/text file with historical transcript memory. JSONL can contain "
+            "key/history records; plain text is passed to every demo run."
+        ),
+    )
     return parser
 
 
@@ -74,9 +90,80 @@ def load_entries(input_path: Path, limit: int | None) -> list[dict[str, Any]]:
     return entries
 
 
+def load_history_map(history_file: str | None, history_field: str) -> tuple[dict[str, str], str | None]:
+    """Load optional external memory from a JSONL or plain-text file."""
+    if not history_file:
+        return {}, None
+
+    path = Path(history_file)
+    text = path.read_text(encoding="utf-8")
+    history_by_key: dict[str, str] = {}
+    parsed_jsonl = False
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            parsed_jsonl = False
+            break
+        parsed_jsonl = True
+        key = item.get("key") or item.get("id") or item.get("utt_id")
+        history = item.get(history_field) if history_field else None
+        if key is not None and history is not None:
+            history_by_key[str(key)] = str(history)
+
+    if parsed_jsonl and history_by_key:
+        return history_by_key, None
+    return {}, text
+
+
+def get_entry_history(
+    entry: dict[str, Any],
+    args: argparse.Namespace,
+    history_by_key: dict[str, str],
+    global_history: str | None,
+) -> str | None:
+    """Return history text for one manifest entry."""
+    key = str(entry["key"])
+    if key in history_by_key:
+        return history_by_key[key]
+    if global_history is not None:
+        return global_history
+    if args.history_field:
+        history = entry.get(args.history_field)
+        if history is not None:
+            return str(history)
+    return None
+
+
 def compact_prediction(prediction: str) -> str:
     """Keep each pred.txt record on one line."""
     return " ".join(prediction.strip().split())
+
+
+def load_existing_predictions(output_path: Path) -> dict[str, str]:
+    """Read an existing pred.txt-style file into key -> prediction."""
+    if not output_path.exists():
+        return {}
+
+    predictions: dict[str, str] = {}
+    with output_path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            parts = stripped.split(maxsplit=1)
+            if len(parts) != 2:
+                print(
+                    f"[batch_api_asr] Skipping malformed prediction line "
+                    f"{output_path}:{line_number}: {stripped!r}",
+                    file=sys.stderr,
+                )
+                continue
+            key, prediction = parts
+            predictions[key] = prediction
+    return predictions
 
 
 def extract_balanced_json(text: str) -> str | None:
@@ -153,6 +240,7 @@ async def run_entry(
     entry: dict[str, Any],
     args: argparse.Namespace,
     log_dir: Path,
+    history_text: str | None,
 ) -> tuple[str, str, bool]:
     """Run one manifest entry and return key, prediction, success."""
     key = str(entry["key"])
@@ -173,7 +261,12 @@ async def run_entry(
         command.extend(["--planner-api-key", args.planner_api_key])
     if args.planner_base_url:
         command.extend(["--planner-base-url", args.planner_base_url])
+    if history_text is not None:
+        history_path = log_dir / f"{key}.history.txt"
+        history_path.write_text(history_text, encoding="utf-8")
+        command.extend(["--external-memory-path", str(history_path)])
 
+    log_path = log_dir / f"{key}.log"
     last_output = ""
     for attempt in range(args.retries + 1):
         process = await asyncio.create_subprocess_exec(
@@ -196,8 +289,12 @@ async def run_entry(
         else:
             last_output = stdout_bytes.decode("utf-8", errors="replace")
 
-        log_path = log_dir / f"{key}.attempt{attempt + 1}.log"
-        log_path.write_text(last_output, encoding="utf-8")
+        attempt_header = f"===== attempt {attempt + 1}/{args.retries + 1} =====\n"
+        if attempt == 0:
+            log_path.write_text(attempt_header + last_output, encoding="utf-8")
+        else:
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write("\n" + attempt_header + last_output)
 
         rc = process.returncode
         if timed_out or rc != 0:
@@ -207,8 +304,9 @@ async def run_entry(
             try:
                 return key, parse_prediction(last_output), True
             except Exception as exc:  # noqa: BLE001
-                last_output += f"\nPrediction parse error: {type(exc).__name__}: {exc}\n"
-                log_path.write_text(last_output, encoding="utf-8")
+                parse_error = f"\nPrediction parse error: {type(exc).__name__}: {exc}\n"
+                with log_path.open("a", encoding="utf-8") as handle:
+                    handle.write(parse_error)
 
     return key, "", False
 
@@ -222,12 +320,14 @@ async def run_batch(args: argparse.Namespace) -> int:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     entries = load_entries(input_path, args.limit)
-    predictions: dict[str, str] = {}
+    history_by_key, global_history = load_history_map(args.history_file, args.history_field)
+    predictions = load_existing_predictions(output_path)
+    pending_entries = [entry for entry in entries if str(entry["key"]) not in predictions]
     failures: list[str] = []
     semaphore = asyncio.Semaphore(max(1, args.workers))
     progress_lock = asyncio.Lock()
     progress = tqdm(
-        total=len(entries),
+        total=len(pending_entries),
         desc="ASR",
         unit="utt",
         dynamic_ncols=True,
@@ -236,13 +336,13 @@ async def run_batch(args: argparse.Namespace) -> int:
 
     async def worker(entry: dict[str, Any]) -> None:
         async with semaphore:
-            key, prediction, ok = await run_entry(entry, args, log_dir)
+            history_text = get_entry_history(entry, args, history_by_key, global_history)
+            key, prediction, ok = await run_entry(entry, args, log_dir, history_text)
             if ok:
                 predictions[key] = prediction
             else:
                 failures.append(key)
             write_predictions(output_path, entries, predictions)
-            done = len(predictions) + len(failures)
             async with progress_lock:
                 progress.update(1)
                 progress.set_postfix(
@@ -253,7 +353,7 @@ async def run_batch(args: argparse.Namespace) -> int:
                 )
 
     try:
-        await asyncio.gather(*(worker(entry) for entry in entries))
+        await asyncio.gather(*(worker(entry) for entry in pending_entries))
     finally:
         progress.close()
     write_predictions(output_path, entries, predictions)
@@ -264,7 +364,8 @@ async def run_batch(args: argparse.Namespace) -> int:
         print(f"Finished with {len(failures)} failures. See {failure_path}.", file=sys.stderr)
         return 1
 
-    print(f"Wrote {len(predictions)} predictions to {output_path}.")
+    skipped = len(entries) - len(pending_entries)
+    print(f"Wrote {len(predictions)} predictions to {output_path}. Skipped {skipped} existing ids.")
     return 0
 
 

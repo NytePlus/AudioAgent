@@ -11,6 +11,36 @@ Produce an InitialPlan JSON object with keys:
 - `requires_audio_output` (bool): Whether this task requires/produces an audio file as output
 - `notes` (str, optional): Additional notes or considerations
 - `detailed_plan` (list[ExecutionStep], optional): Todo list for complex questions (see below)
+- `planned_tool_calls` (list[PlannedToolCall], optional): Concrete independent tool calls that can be executed in parallel immediately after this plan
+
+Available Tools (JSON):
+{available_tools}
+
+Available Reference Images:
+{image_list}
+# Format:
+# - image_id: description (source)
+# Example:
+# - image_0: screenshot of presentation slide (original)
+
+**Planned Tool Calls (parallel initial execution):**
+For evidence-gathering tools that are independent of each other, include concrete calls in `planned_tool_calls`.
+Each item must have:
+- `step_number` (int): matching or related plan step
+- `tool_name` (str): exact tool name from Available Tools only
+- `tool_args` (dict): arguments using the tool's input_schema names
+- `audio_id` (str | null): audio ID to process for audio tools, usually `"audio_0"` for the first input
+- `image_id` (str | null): image ID to process for image tools, usually `"image_0"` for the first image
+- `rationale` (str | null): why this tool is useful
+
+Rules:
+- Use `planned_tool_calls: []` if no independent initial tool call is needed.
+- Only include calls that can safely run in parallel. If a call depends on another tool's output, put it in `detailed_plan` only.
+- Do not include audio-producing/transformation tools in `planned_tool_calls`; those must be handled later by the planner loop.
+- If ASR/transcription is needed and `transcribe_qwen3_asr_flash` is available, use that tool.
+- If OCR or visual context is needed and image tools are available, use image IDs from Available Reference Images.
+- Do not request VAD-only tools.
+- Never invent tool names. Use exact names from Available Tools.
 
 **Using the Frontend Caption:**
 - If the caption is clear and confident, you may keep the plan simple.
@@ -45,7 +75,7 @@ For complex questions requiring multiple steps, provide an array of ExecutionSte
 
 **Example Simple Question:**
 Question: "What is the sample rate of this audio?"
-Output: `{{ "detailed_plan": [] }}`
+Output: `{{ "detailed_plan": [], "planned_tool_calls": [] }}`
 
 **Example Complex Question:**
 Question: "What emotions does each speaker express?"
