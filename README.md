@@ -5,6 +5,7 @@ A LangGraph-based framework for audio understanding with iterative tool use.
 ## Overview
 
 This framework provides a clean architecture for building audio understanding agents that:
+
 - Process audio with a frontend LALM (Large Audio Language Model)
 - Use an LLM planner to reason about evidence and decide next actions
 - Invoke tools iteratively to gather more evidence
@@ -31,6 +32,7 @@ START
 ```
 
 **Key Behaviors:**
+
 - **Initial Planning**: Planner generates a high-level approach based only on the question.
 - **Evidence Summarization**: Before final answer, a text-LLM compresses all evidence, planner trace, and tool history into a single neutral narrative. This prevents the frontend model from being overwhelmed by verbose raw tool outputs.
 - **Frontend Final Answer**: The frontend (audio-capable) model generates the final answer directly from the original audio(s) and summarized context, rather than the text planner producing the answer.
@@ -75,8 +77,11 @@ audio_agent/
 │       ├── loader.py      # Auto-discovery and registration
 │       ├── _template/     # Template for new tools
 │       ├── asr_qwen3/     # Qwen3-ASR-1.7B speech recognition
+│       ├── qwen3_asr_flash/ # Qwen3-ASR-Flash speech recognition (API)
 │       ├── diarizen/      # Speaker diarization
-│       └── omni_captioner/ # Qwen3-Omni captioner
+│       ├── image_captioner/ # Qwen Omni Flash image captioning (API)
+│       ├── omni_captioner/ # Qwen3-Omni audio captioner (API)
+│       └── qwen_vl_ocr/   # Qwen VL OCR (API)
 ├── fusion/                # Evidence fusion
 │   ├── base.py           # BaseEvidenceFuser ABC
 │   └── default_fuser.py  # Default implementation
@@ -149,8 +154,11 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Setup individual tools
 cd audio_agent/tools/catalog/asr_qwen3 && ./setup.sh && cd -
+cd audio_agent/tools/catalog/qwen3_asr_flash && ./setup.sh && cd -
 cd audio_agent/tools/catalog/diarizen && ./setup.sh && cd -
 cd audio_agent/tools/catalog/omni_captioner && ./setup.sh && cd -
+cd audio_agent/tools/catalog/qwen_vl_ocr && ./setup.sh && cd -
+cd audio_agent/tools/catalog/image_captioner && ./setup.sh && cd -
 
 # Or use the helper script to setup all tools
 ./verify_all_tools.sh --setup
@@ -191,6 +199,8 @@ If you don't have a local GPU or prefer to use API-based models:
 # Lightweight setup for API/CPU/Mac use.
 # This installs API/CPU dependencies and keeps local model tools out of
 # API demos unless you explicitly opt in.
+# It includes ffmpeg, librosa, omni_captioner, qwen3_asr_flash, qwen_vl_ocr,
+# and image_captioner.
 ./light_setup.sh --verify
 
 # Demo with API planner + local frontend (single audio)
@@ -201,7 +211,14 @@ python -m audio_agent.examples.demo_run_api_planner \
 
 # Demo with API frontend + API planner (fully API-based, no local models)
 python -m audio_agent.examples.demo_run_api_full \
-  --audio examples/YTB+15-b1NyRxtM+00002.wav \
+  --audio /path/to/audio.wav \
+  --question "What is being said?" \
+  --frontend-model "qwen3-omni-flash" \
+  --planner-model "qwen3.5-plus"
+
+# --audio also accepts Kaldi-style ark offsets and materializes them to WAV.
+python -m audio_agent.examples.demo_run_api_full \
+  --audio /data/test_oracle_v1/data/format.1/data_wav.ark:16920526 \
   --question "What is being said?" \
   --frontend-model "qwen3-omni-flash" \
   --planner-model "qwen3.5-plus"
@@ -212,9 +229,19 @@ python -m audio_agent.examples.demo_run_api_full \
   --question "Is the speaker in the second audio the same as the first?" \
   --frontend-model "qwen3-omni-flash" \
   --planner-model "qwen3.5-plus"
+
+# Image-guided ASR correction: use OCR/caption context from an image
+# to correct likely transcription mistakes in the audio.
+python -m audio_agent.examples.demo_run_api_full_image_correction \
+  --audio /data/test_oracle_v1/data/format.1/data_wav.ark:16920526 \
+  --image /data/test_oracle_v1/slides/child_0000/child_0000-00004.png \
+  --question "Transcribe what is being said and correct domain terms using the image." \
+  --frontend-model "qwen3-omni-flash" \
+  --planner-model "qwen3.5-plus"
 ```
 
 The `demo_run_api_full.py` script is ideal for:
+
 - Users without local GPU resources
 - Quick prototyping and testing
 - Deployments where model inference is handled externally
@@ -251,6 +278,7 @@ audio-agent-download-models --list
 ```
 
 **Available models:**
+
 - `qwen2-audio` - Qwen/Qwen2-Audio-7B-Instruct (frontend, ~15GB)
 - `qwen3-omni` - Qwen/Qwen3-Omni-30B-A3B-Instruct (frontend, ~60GB)
 - `qwen2.5` - Qwen/Qwen2.5-7B-Instruct (planner, ~15GB)
@@ -288,11 +316,13 @@ pytest audio_agent/tests/ -v
 ## Multi-Audio Support
 
 The framework supports processing multiple audio files in a single run, enabling tasks like:
+
 - **Speaker verification**: Compare if two audio files contain the same speaker
 - **Audio comparison**: Compare content, quality, or characteristics across multiple files
 - **Multi-source analysis**: Analyze audio from different sources together
 
 When multiple audios are provided:
+
 - Each audio is assigned an ID (`audio_0`, `audio_1`, `audio_2`, etc.)
 - The frontend processes all audios and provides a caption for each
 - Tools can reference specific audios by their ID
@@ -321,22 +351,26 @@ if agent.is_successful(result):
 ## Design Principles
 
 ### Fail-Fast
+
 - All inputs validated before processing
 - Missing required fields raise explicit exceptions
 - Invalid tool names, malformed outputs caught immediately
 - No silent fallbacks or None returns
 
 ### Explicit Contracts
+
 - Every component has well-defined input/output schemas
 - Pydantic models with validation
 - Type hints throughout
 
 ### Extensibility
+
 - Abstract base classes for all major components
 - Easy to replace dummy implementations with real ones
 - Clean dependency injection via factory functions
 
 ### Separation of Concerns
+
 - Frontend: initial audio understanding
 - Planner: decision making
 - Tools: external capabilities
@@ -490,28 +524,31 @@ All prompts are now externalized as markdown files in `audio_agent/prompts/`. Yo
 
 **Available prompt files:**
 
-| File | Purpose | Variables |
-|------|---------|-----------|
-| `frontend_system.md` | Frontend system prompt | None |
-| `frontend_user.md` | Frontend user instruction | `{question}`, `{audio_path_or_uri}` |
-| `frontend_final_answer_system.md` | Frontend final answer system prompt | None |
-| `frontend_final_answer_user.md` | Frontend final answer user instruction | `{question}`, `{expected_output_format}`, `{initial_plan_text}`, `{frontend_direct_text}`, `{evidence_and_history_text}`, `{audio_summary}`, `{format_critique_section}` |
-| `plan_system.md` | Planner initial planning system prompt | None |
-| `plan_user.md` | Planner initial planning user instruction | `{question}` |
-| `decide_system.md` | Planner decision system prompt | None |
-| `decide_user.md` | Planner decision user instruction | `{question}`, `{frontend_caption}`, `{initial_plan}`, `{evidence_log}`, `{tool_call_history}`, `{available_tools}`, `{step_count}`, `{max_steps}` |
-| `decide_rules.md` | Planner decision rules | None |
-| `clarify_system.md` | Planner clarify system prompt | None |
-| `clarify_user.md` | Planner clarify user instruction | `{question}`, `{clarified_intent}`, `{expected_format}`, `{evidence_text}` |
-| `format_check_system.md` | Format check system prompt | None |
-| `format_check_user.md` | Format check user instruction | `{question}`, `{expected_format}`, `{proposed_answer}` |
-| `evidence_summary_system.md` | Evidence summarization system prompt | None |
-| `evidence_summary_user.md` | Evidence summarization user instruction | `{question}`, `{frontend_caption}`, `{evidence_text}`, `{planner_trace_text}`, `{tool_history_text}`, `{clarified_intent}`, `{expected_output_format}` |
-| `task_skills.yaml` | Task skill reference for initial planning | Rendered as markdown cookbook |
+
+| File                              | Purpose                                   | Variables                                                                                                                                                                |
+| --------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `frontend_system.md`              | Frontend system prompt                    | None                                                                                                                                                                     |
+| `frontend_user.md`                | Frontend user instruction                 | `{question}`, `{audio_path_or_uri}`                                                                                                                                      |
+| `frontend_final_answer_system.md` | Frontend final answer system prompt       | None                                                                                                                                                                     |
+| `frontend_final_answer_user.md`   | Frontend final answer user instruction    | `{question}`, `{expected_output_format}`, `{initial_plan_text}`, `{frontend_direct_text}`, `{evidence_and_history_text}`, `{audio_summary}`, `{format_critique_section}` |
+| `plan_system.md`                  | Planner initial planning system prompt    | None                                                                                                                                                                     |
+| `plan_user.md`                    | Planner initial planning user instruction | `{question}`                                                                                                                                                             |
+| `decide_system.md`                | Planner decision system prompt            | None                                                                                                                                                                     |
+| `decide_user.md`                  | Planner decision user instruction         | `{question}`, `{frontend_caption}`, `{initial_plan}`, `{evidence_log}`, `{tool_call_history}`, `{available_tools}`, `{step_count}`, `{max_steps}`                        |
+| `decide_rules.md`                 | Planner decision rules                    | None                                                                                                                                                                     |
+| `clarify_system.md`               | Planner clarify system prompt             | None                                                                                                                                                                     |
+| `clarify_user.md`                 | Planner clarify user instruction          | `{question}`, `{clarified_intent}`, `{expected_format}`, `{evidence_text}`                                                                                               |
+| `format_check_system.md`          | Format check system prompt                | None                                                                                                                                                                     |
+| `format_check_user.md`            | Format check user instruction             | `{question}`, `{expected_format}`, `{proposed_answer}`                                                                                                                   |
+| `evidence_summary_system.md`      | Evidence summarization system prompt      | None                                                                                                                                                                     |
+| `evidence_summary_user.md`        | Evidence summarization user instruction   | `{question}`, `{frontend_caption}`, `{evidence_text}`, `{planner_trace_text}`, `{tool_history_text}`, `{clarified_intent}`, `{expected_output_format}`                   |
+| `task_skills.yaml`                | Task skill reference for initial planning | Rendered as markdown cookbook                                                                                                                                            |
+
 
 **Example: Customizing the frontend system prompt:**
 
 Edit `audio_agent/prompts/frontend_system.md`:
+
 ```markdown
 You are an expert audio analyst. Focus on identifying speakers, emotions, 
 and background sounds relevant to the question.
@@ -521,6 +558,7 @@ Return ONLY the caption as plain text.
 **Example: Adding decision rules:**
 
 Edit `audio_agent/prompts/decide_rules.md` to add custom decision logic:
+
 ```markdown
 1. If you have enough evidence to answer the question, use action='answer'.
 2. If you need transcription, use action='call_tool' with an ASR tool.

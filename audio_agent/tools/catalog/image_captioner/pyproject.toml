@@ -1,0 +1,15 @@
+[project]
+name = "image-captioner-tool"
+version = "1.0.0"
+description = "API-based image captioning using Qwen Omni Flash via OpenAI-compatible DashScope"
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=1.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["server", "model"]

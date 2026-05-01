@@ -13,11 +13,11 @@
 - `audio_agent/graph/`: LangGraph assembly + node logic + routing (`builder.py`, `nodes.py`, `routing.py`); classification `core`.
 - `audio_agent/frontend/`: frontend interface/template (`base.py`, `model_frontend.py`), dummy frontend (`dummy_frontend.py`), Qwen2-Audio adapter (`qwen2_audio_frontend.py`), Qwen3-Omni adapter (`qwen3_omni_frontend.py`); classification `core`.
 - `audio_agent/planner/`: planner interface (`base.py`), model planner template (`model_planner.py`), dummy planner (`dummy_planner.py`), Qwen2.5 adapter (`qwen25_planner.py`); classification `core`.
-- `audio_agent/tools/`: tool interface (`base.py`), registry (`registry.py`), executor (`executor.py`), dummy tools (`dummy_tools.py`), plus MCP infrastructure (`mcp/`) and tool catalog (`catalog/` with tools: asr_qwen3, diarizen, ffmpeg, librosa, omni_captioner, snakers4_silero-vad); classification `core`.
+- `audio_agent/tools/`: tool interface (`base.py`), registry (`registry.py`), executor (`executor.py`), dummy tools (`dummy_tools.py`), plus MCP infrastructure (`mcp/`) and tool catalog (`catalog/` with tools: asr_qwen3, diarizen, ffmpeg, image_captioner, librosa, omni_captioner, qwen_vl_ocr, snakers4_silero-vad); classification `core`.
 - `audio_agent/fusion/`: evidence fusion interface + default fuser; classification `core`.
 - `audio_agent/config/`: `AgentConfig` schema; classification `config`.
 - `audio_agent/utils/`: validation helpers used by graph nodes; classification `support`.
-- `audio_agent/examples/`: demo scripts (`demo_run.py`, `demo_run_auto_tools.py`, `demo_run_real_asr.py`, `demo_run_api_planner.py`, `demo_run_api_full.py`); classification `support/example`.
+- `audio_agent/examples/`: demo scripts (`demo_run.py`, `demo_run_auto_tools.py`, `demo_run_real_asr.py`, `demo_run_api_planner.py`, `demo_run_api_full.py`, `demo_run_api_full_image_correction.py`); classification `support/example`.
 - `audio_agent/tests/`: unit + smoke tests, including state, registry, graph, frontend-base, model I/O, planner-base, and Qwen adapter tests; classification `support`.
 - `tool_preparation/`: Harness-First Agent Workflow for automated tool onboarding; contains policies, playbooks, contracts, specs, and templates; classification `support/docs`.
 - `README.md`: architecture and quick start reference; classification `support/docs`.
@@ -70,7 +70,7 @@
 - `audio_agent/planner/qwen25_planner.py`: Qwen2.5-based planner with real LLM reasoning.
 - `audio_agent/tools/base.py`, `registry.py`, `executor.py`, `dummy_tools.py`: tool abstraction, registration (internal + MCP), execution, dummy tools.
 - `audio_agent/tools/mcp/`: MCP infrastructure for external tools (client, server manager, tool adapter, schemas).
-- `audio_agent/tools/catalog/`: MCP tool catalog with auto-discovery (loader) and tool implementations (asr_qwen3, diarizen, ffmpeg, librosa, omni_captioner, snakers4_silero-vad).
+- `audio_agent/tools/catalog/`: MCP tool catalog with auto-discovery (loader) and tool implementations (asr_qwen3, qwen3_asr_flash, diarizen, ffmpeg, image_captioner, librosa, omni_captioner, qwen_vl_ocr, snakers4_silero-vad).
 - `audio_agent/fusion/base.py` + `audio_agent/fusion/default_fuser.py`: tool result to evidence transformation.
 
 ### Wrapper/config/validation/example/test layers
