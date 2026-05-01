@@ -63,3 +63,5 @@ tool_preparation/SERVER_SPECIFIC_*.md
 /audio_agent/tools/catalog/*/.artifact/
 /audio_agent/tools/catalog/*/artifacts/
 /audio_agent/tools/catalog/*/artifact/
+
+pred.txt

@@ -190,10 +190,11 @@ class Qwen3ASRFlashServer:
             "audio_path": result.audio_source,
             "text": result.transcript,
             "language": result.language,
-            "enable_itn": result.enable_itn,
-            "context_used": result.context_used,
-            "annotations": result.annotations,
-            "usage": result.usage,
+            "emotion": result.annotations.emotion,
+            # "enable_itn": result.enable_itn,
+            # "context_used": result.context_used,
+            # "annotations": result.annotations,
+            # "usage": result.usage,
         }
         return {
             "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}],

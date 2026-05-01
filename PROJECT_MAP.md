@@ -17,7 +17,7 @@
 - `audio_agent/fusion/`: evidence fusion interface + default fuser; classification `core`.
 - `audio_agent/config/`: `AgentConfig` schema; classification `config`.
 - `audio_agent/utils/`: validation helpers used by graph nodes; classification `support`.
-- `audio_agent/examples/`: demo scripts (`demo_run.py`, `demo_run_auto_tools.py`, `demo_run_real_asr.py`, `demo_run_api_planner.py`, `demo_run_api_full.py`, `demo_run_api_full_image_correction.py`); classification `support/example`.
+- `audio_agent/examples/`: demo scripts (`demo_run.py`, `demo_run_auto_tools.py`, `demo_run_real_asr.py`, `demo_run_api_planner.py`, `demo_run_api_full.py`, `demo_run_api_asr.py`, `demo_run_api_full_image_correction.py`); classification `support/example`.
 - `audio_agent/tests/`: unit + smoke tests, including state, registry, graph, frontend-base, model I/O, planner-base, and Qwen adapter tests; classification `support`.
 - `tool_preparation/`: Harness-First Agent Workflow for automated tool onboarding; contains policies, playbooks, contracts, specs, and templates; classification `support/docs`.
 - `README.md`: architecture and quick start reference; classification `support/docs`.

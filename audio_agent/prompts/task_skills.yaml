@@ -11,24 +11,18 @@ abstract_slots:
   silence_structure:
     contract: Threshold-based silence/non-silence intervals, not semantic segmentation.
     current_catalog_defaults: ["ffmpeg.silencedetect", "librosa.segment_audio"]
-  speech_vad:
-    contract: Speech/music/singing regions and speech activity.
-    current_catalog_defaults: ["fireredvad.fireredvad_predict", "snakers4_silero-vad.vad_predict"]
-  audio_event_detection:
-    contract: Coarse speech/singing/music event timestamps.
-    current_catalog_defaults: ["fireredvad.fireredvad_aed"]
   speech_asr:
     contract: Transcribe speech content, optionally with timestamps.
-    current_catalog_defaults: ["asr_qwen3.transcribe_qwenasr", "whisperx.transcribe_audio", "fireredasr2s.transcribe_fireredasr"]
+    current_catalog_defaults: ["qwen3_asr_flash.transcribe_qwen3_asr_flash"]
   timestamped_asr:
-    contract: Transcribe speech with word/segment timestamps.
-    current_catalog_defaults: ["asr_qwen3.transcribe_qwenasr_with_timestamps", "whisperx.transcribe_audio"]
+    contract: Transcribe speech content; use qwen3-asr-flash unless a timestamp-capable ASR is registered.
+    current_catalog_defaults: ["qwen3_asr_flash.transcribe_qwen3_asr_flash"]
   diarization:
     contract: Who-spoke-when speaker segments.
-    current_catalog_defaults: ["diarizen.diarize", "whisperx.transcribe_with_diarization"]
+    current_catalog_defaults: ["diarizen.diarize"]
   speaker_verification:
     contract: Same/different speaker verification between two clips.
-    current_catalog_defaults: ["wespeaker.speaker_verify"]
+    current_catalog_defaults: []
   omni_perception:
     contract: LALM question-guided caption or direct perceptual observation.
     current_catalog_defaults: ["omni_captioner.omni_caption"]
@@ -63,10 +57,8 @@ skills:
         optional: true
     default_bindings_from_ref_flows:
       speech_asr:
-        - tool: "whisperx.transcribe_audio"
-          reference: "ARC-Agent-NO1 tools/toolkit.py: transcribe_audio; tools.yaml fixes Whisper large-v3 for quality."
-        - tool: "asr_qwen3.transcribe_qwenasr"
-          reference: "Current catalog fallback for multilingual ASR."
+        - tool: "qwen3_asr_flash.transcribe_qwen3_asr_flash"
+          reference: "Current catalog API ASR tool."
 
   - id: speech.asr.mandarin_clean_read
     task: Mandarin read-speech ASR on clean AISHELL-style audio.
@@ -77,73 +69,8 @@ skills:
       - slot: speech_asr
     default_bindings_from_ref_flows:
       speech_asr:
-        - tool: "asr_qwen3.transcribe_qwenasr"
-          reference: "Current catalog multilingual ASR; table report gives strong Qwen/Kimi Omni-style results on AISHELL-1."
-        - tool: "fireredasr2s.transcribe_fireredasr"
-          reference: "Current catalog Chinese/code-switching ASR fallback."
-
-  - id: speech.asr.codeswitch_zh_en_dialogue
-    task: Mandarin-English code-switching spontaneous dialogue ASR.
-    dataset_hints: ["cs_dialogue"]
-    intent_patterns: ["code-switch", "mixed Chinese English", "Mandarin English dialogue"]
-    chain:
-      - slot: speech_vad
-      - slot: speech_asr
-      - slot: timestamped_asr
-        optional: true
-    default_bindings_from_ref_flows:
-      speech_asr:
-        - tool: "asr_qwen3.transcribe_qwenasr"
-          reference: "Report Table 3 default when available; current catalog has Qwen3-ASR."
-        - tool: "fireredasr2s.transcribe_fireredasr"
-          reference: "Current catalog claims Chinese, English, code-switching support."
-
-  - id: speech.asr.mandarin_dialect
-    task: Mandarin and Chinese subdialect ASR.
-    dataset_hints: ["kespeech"]
-    intent_patterns: ["dialect", "accented mandarin", "subdialect"]
-    chain:
-      - slot: speech_vad
-      - slot: speech_asr
-    default_bindings_from_ref_flows:
-      speech_asr:
-        - tool: "fireredasr2s.transcribe_fireredasr"
-          reference: "Closest current catalog Chinese/dialect ASR fallback."
-        - tool: "asr_qwen3.transcribe_qwenasr"
-          reference: "Current catalog multilingual fallback."
-
-  - id: speech.asr.noisy_english
-    task: English ASR under crowd/noisy broadcast conditions.
-    dataset_hints: ["voxpopuli_en"]
-    intent_patterns: ["noisy English", "background noise", "broadcast speech"]
-    chain:
-      - slot: audio_metadata
-      - slot: speech_vad
-      - slot: speech_asr
-    default_bindings_from_ref_flows:
-      speech_asr:
-        - tool: "whisperx.transcribe_audio"
-          reference: "ARC default high-quality ASR path."
-        - tool: "asr_qwen3.transcribe_qwenasr"
-          reference: "Current catalog fallback; report Table 3 competitive on VoxPopuli-en."
-
-  - id: speech.asr.noise_reverb_mandarin_multispeaker
-    task: Mandarin ASR with noise, reverberation, multi-speaker or in-car conditions.
-    dataset_hints: ["aishell_5"]
-    intent_patterns: ["reverb", "noisy car", "multi-speaker Mandarin"]
-    chain:
-      - slot: speech_vad
-      - slot: diarization
-      - slot: speech_asr
-    default_bindings_from_ref_flows:
-      diarization:
-        - tool: "diarizen.diarize"
-          reference: "Current catalog diarization."
-      speech_asr:
-        - tool: "fireredasr2s.transcribe_fireredasr"
-          reference: "Closest current Chinese ASR fallback."
-        - tool: "asr_qwen3.transcribe_qwenasr"
-          reference: "Current catalog multilingual ASR."
+        - tool: "qwen3_asr_flash.transcribe_qwen3_asr_flash"
+          reference: "Current catalog API ASR tool."
 
   - id: speech.asr.contextual_named_entities_en
     task: English contextual ASR with hotwords, named entities, domains, or prompt context.
@@ -155,8 +82,8 @@ skills:
         optional: true
     default_bindings_from_ref_flows:
       speech_asr:
-        - tool: "asr_qwen3.transcribe_qwenasr"
-          reference: "Current catalog ASR fallback; table includes Qwen3-ASR ContextASR result."
+        - tool: "qwen3_asr_flash.transcribe_qwen3_asr_flash"
+          reference: "Current catalog API ASR tool with optional context biasing."
       omni_perception:
         - tool: "omni_captioner.omni_caption"
           reference: "Current front-end LALM fallback for context-sensitive perception."
@@ -171,34 +98,8 @@ skills:
         optional: true
     default_bindings_from_ref_flows:
       speech_asr:
-        - tool: "asr_qwen3.transcribe_qwenasr"
-          reference: "Report Table 3 best current installed candidate for ContextASR-Zh."
-
-  - id: speech.speaker_count_short
-    task: Count speakers in short audio.
-    dataset_hints: ["ami", "mmar_speaker"]
-    intent_patterns: ["how many speakers", "number of speakers"]
-    chain:
-      - slot: speech_vad
-      - slot: diarization
-      - slot: speaker_verification
-        optional: true
-    default_bindings_from_ref_flows:
-      diarization:
-        - tool: "diarizen.diarize"
-          reference: "ARC speaker category uses diarization and speaker count."
-        - tool: "whisperx.transcribe_with_diarization"
-          reference: "Current catalog fallback with ASR + diarization."
-
-  - id: speech.speaker_identity_same_different
-    task: Verify whether two clips contain the same speaker.
-    intent_patterns: ["same speaker", "different speaker", "speaker verification"]
-    chain:
-      - slot: speaker_verification
-    default_bindings_from_ref_flows:
-      speaker_verification:
-        - tool: "wespeaker.speaker_verify"
-          reference: "Current catalog dedicated speaker verification."
+        - tool: "qwen3_asr_flash.transcribe_qwen3_asr_flash"
+          reference: "Current catalog API ASR tool with optional context biasing."
 
   - id: speech.dialogue_content_structure
     task: Understand dialogue events, turns, decisions, or conversational structure.
@@ -210,10 +111,8 @@ skills:
         optional: true
     default_bindings_from_ref_flows:
       timestamped_asr:
-        - tool: "whisperx.transcribe_with_diarization"
-          reference: "ARC content category uses dialogue structure + diarization."
-        - tool: "asr_qwen3.transcribe_qwenasr_with_timestamps"
-          reference: "Current catalog timestamped ASR."
+        - tool: "qwen3_asr_flash.transcribe_qwen3_asr_flash"
+          reference: "Current catalog API ASR fallback; does not guarantee timestamps."
 
   - id: speech.emotion_ser
     task: Speech emotion recognition or affect inference.
@@ -285,27 +184,6 @@ skills:
         - tool: "omni_captioner.omni_caption"
           reference: "ARC scene category uses scene context + speech LLM; current catalog has omni perception."
 
-  - id: audio.event_count_class_specific
-    task: Count class-specific acoustic events such as taps, claps, knocks, beeps, or screams.
-    intent_patterns: ["how many times", "count", "number of taps", "claps", "knocks"]
-    chain:
-      - slot: audio_event_detection
-        optional: true
-      - slot: beat_onset
-      - slot: energy_dynamics
-      - slot: omni_perception
-        optional: true
-    guardrails:
-      - "Onset count is only a proposal; never final evidence without event-class confirmation."
-      - "Use event-specific perception or ASR/omni observation to label what each onset likely is."
-    default_bindings_from_ref_flows:
-      beat_onset:
-        - tool: "librosa.analyze_onsets"
-          reference: "ARC counting category uses beat/onset plus spectral/energy."
-      audio_event_detection:
-        - tool: "fireredvad.fireredvad_aed"
-          reference: "Current catalog coarse AED fallback."
-
   - id: audio.temporal_order_event_sequence
     task: Determine order of events, instruments, speakers, or actions over time.
     intent_patterns: ["first", "then", "before", "after", "order", "sequence"]
@@ -321,25 +199,6 @@ skills:
           reference: "ARC timing category uses temporal and segment analysis; current catalog low-level substitute."
         - tool: "ffmpeg.silencedetect"
           reference: "Current catalog threshold silence cross-check."
-
-  - id: audio.segment_structure_music_or_narrative
-    task: Decide whether audio has one uninterrupted segment or multiple meaningful sections.
-    intent_patterns: ["segment", "uninterrupted", "part", "section"]
-    chain:
-      - slot: audio_metadata
-      - slot: silence_structure
-      - slot: audio_event_detection
-        optional: true
-      - slot: omni_perception
-        optional: true
-    guardrails:
-      - "silence_structure detects threshold breaks only; semantic section count needs cross-evidence."
-    default_bindings_from_ref_flows:
-      silence_structure:
-        - tool: "ffmpeg.silencedetect"
-          reference: "Cross-check for non-silence intervals."
-        - tool: "librosa.segment_audio"
-          reference: "Current catalog filtered non-silent intervals."
 
   - id: music.performance_segment_comparison
     task: Compare musical performance quality across candidate segments.

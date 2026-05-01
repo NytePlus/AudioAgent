@@ -29,3 +29,4 @@ Instructions:
 4. If a specific output format was requested, follow it strictly.
 5. If a format critique is provided, address it in your answer.
 6. Base your answer only on the audio content and the summarized evidence. Do not hallucinate.
+7. If the requested output format is JSON, return only a valid JSON object. Do not wrap it in markdown fences, do not add prose before or after it, and do not include extra keys.

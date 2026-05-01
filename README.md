@@ -122,7 +122,9 @@ audio_agent/
 │   ├── demo_run_auto_tools.py     # Demo with auto MCP tool discovery
 │   ├── demo_run_real_asr.py       # Demo with real ASR tool
 │   ├── demo_run_api_planner.py    # Demo with API planner + local frontend
-│   └── demo_run_api_full.py       # Demo with API frontend + API planner (no GPU)
+│   ├── demo_run_api_full.py       # Demo with API frontend + API planner (no GPU)
+│   ├── demo_run_api_asr.py        # API ASR demo starting from frontend evidence
+│   └── demo_run_api_full_image_correction.py  # API demo with image-guided ASR correction
 └── tests/                 # Tests
     ├── test_state.py
     ├── test_registry.py
@@ -222,6 +224,20 @@ python -m audio_agent.examples.demo_run_api_full \
   --question "What is being said?" \
   --frontend-model "qwen3-omni-flash" \
   --planner-model "qwen3.5-plus"
+
+# ASR API demo. It does not require --question, skips initial_prompt_node,
+# starts the agent graph at frontend_evidence_node, and returns JSON:
+# {"pred": "<transcript>"}
+python -m audio_agent.examples.demo_run_api_asr \
+  --audio /data/test_oracle_v1/data/format.1/data_wav.ark:16920526 \
+  --frontend-model "qwen3-omni-flash"
+
+# Batch ASR over a JSONL manifest, rewriting the slidespeech prefix to /data
+# and writing lines as: id pred
+python scripts/batch_api_asr.py \
+  --input /data/dev_oracle_v1/multitask.jsonl \
+  --output pred.txt \
+  --workers 8
 
 # Multi-audio example with API (speaker verification)
 python -m audio_agent.examples.demo_run_api_full \

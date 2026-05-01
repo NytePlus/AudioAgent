@@ -180,6 +180,7 @@ audio_agent/
 │   ├── demo_run_real_asr.py       # Demo with real ASR tool (Qwen3-ASR-1.7B)
 │   ├── demo_run_api_planner.py    # Demo with API planner + local frontend
 │   ├── demo_run_api_full.py       # Demo with API frontend + API planner (no local GPU needed)
+│   ├── demo_run_api_asr.py        # API ASR demo starting from frontend evidence
 │   └── demo_run_api_full_image_correction.py # API demo with image-guided ASR correction
 └── tests/                     # Unit and smoke tests
     ├── test_state.py
@@ -274,6 +275,10 @@ python -m audio_agent.examples.demo_run_api_planner \
 python -m audio_agent.examples.demo_run_api_full \
   --audio /path/to/audio.wav \
   --question "What is being said?"
+
+# API ASR demo: skips initial_prompt_node and starts at frontend_evidence_node
+python -m audio_agent.examples.demo_run_api_asr \
+  --audio /path/to/audio.wav
 
 # Demo with image-guided ASR correction
 python -m audio_agent.examples.demo_run_api_full_image_correction \
