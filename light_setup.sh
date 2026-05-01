@@ -18,31 +18,75 @@
 #   ./light_setup.sh
 #   ./light_setup.sh --verify
 #   ./light_setup.sh --core-only
+#   ./light_setup.sh --tools external_memory,image_qa,kw_verify --verify
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CATALOG_DIR="$SCRIPT_DIR/audio_agent/tools/catalog"
 TOOLS=(external_memory ffmpeg image_qa image_captioner kw_verify librosa omni_captioner qwen3_asr_flash qwen_vl_ocr)
+SELECTED_TOOLS=("${TOOLS[@]}")
 
 VERIFY=false
 CORE_ONLY=false
+CONTINUE_ON_ERROR=false
 
-for arg in "$@"; do
-    case "$arg" in
+usage() {
+    cat <<'EOF'
+Usage: ./light_setup.sh [options]
+
+Options:
+  --verify                 Run each selected tool's test_env.sh after setup.
+  --core-only              Only install the root framework environment.
+  --tools a,b,c            Setup only the comma-separated tool list.
+  --continue-on-error      Continue setting up remaining tools if one fails.
+  -h, --help               Show this help.
+
+Lightweight tools:
+  external_memory, ffmpeg, image_qa, image_captioner, kw_verify, librosa,
+  omni_captioner, qwen3_asr_flash, qwen_vl_ocr
+EOF
+}
+
+split_tools() {
+    local tools_csv="$1"
+    IFS=',' read -r -a SELECTED_TOOLS <<< "$tools_csv"
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
         --verify)
             VERIFY=true
+            shift
             ;;
         --core-only)
             CORE_ONLY=true
+            shift
+            ;;
+        --continue-on-error)
+            CONTINUE_ON_ERROR=true
+            shift
+            ;;
+        --tools)
+            if [ "$#" -lt 2 ]; then
+                echo "Missing value for --tools" >&2
+                usage
+                exit 1
+            fi
+            split_tools "$2"
+            shift 2
+            ;;
+        --tools=*)
+            split_tools "${1#--tools=}"
+            shift
             ;;
         -h|--help)
-            sed -n '1,20p' "$0"
+            usage
             exit 0
             ;;
         *)
-            echo "Unknown argument: $arg"
-            echo "Usage: ./light_setup.sh [--verify] [--core-only]"
+            echo "Unknown argument: $1" >&2
+            usage
             exit 1
             ;;
     esac
@@ -63,7 +107,7 @@ find_uv() {
         return
     fi
 
-    info "uv not found; installing uv with the official installer"
+    echo "[light-setup] uv not found; installing uv with the official installer" >&2
     curl -LsSf https://astral.sh/uv/install.sh | sh
 
     if [ -x "$HOME/.local/bin/uv" ]; then
@@ -122,6 +166,8 @@ setup_core_env() {
 
 setup_tool() {
     local tool_name="$1"
+    local uv_bin="$2"
+    local python_bin="$3"
     local tool_dir="$CATALOG_DIR/$tool_name"
 
     if [ ! -d "$tool_dir" ]; then
@@ -135,7 +181,7 @@ setup_tool() {
     fi
 
     info "Setting up lightweight tool: $tool_name"
-    (cd "$tool_dir" && bash setup.sh)
+    (cd "$tool_dir" && UV="$uv_bin" PYTHON="$python_bin" bash setup.sh)
 }
 
 verify_tool() {
@@ -166,9 +212,16 @@ main() {
 
     setup_core_env "$uv_bin" "$python_bin"
 
+    local failed=0
+
     if [ "$CORE_ONLY" = false ]; then
-        for tool_name in "${TOOLS[@]}"; do
-            setup_tool "$tool_name"
+        for tool_name in "${SELECTED_TOOLS[@]}"; do
+            if ! setup_tool "$tool_name" "$uv_bin" "$python_bin"; then
+                failed=$((failed + 1))
+                if [ "$CONTINUE_ON_ERROR" = false ]; then
+                    exit 1
+                fi
+            fi
         done
 
         if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
@@ -176,10 +229,20 @@ main() {
         fi
 
         if [ "$VERIFY" = true ]; then
-            for tool_name in "${TOOLS[@]}"; do
-                verify_tool "$tool_name"
+            for tool_name in "${SELECTED_TOOLS[@]}"; do
+                if ! verify_tool "$tool_name"; then
+                    failed=$((failed + 1))
+                    if [ "$CONTINUE_ON_ERROR" = false ]; then
+                        exit 1
+                    fi
+                fi
             done
         fi
+    fi
+
+    if [ "$failed" -gt 0 ]; then
+        echo "[light-setup] Completed with $failed failure(s)" >&2
+        exit 1
     fi
 
     info "Done"

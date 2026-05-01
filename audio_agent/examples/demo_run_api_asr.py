@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
 """
-API-based ASR demo that starts the agent graph from frontend evidence.
+Demo script for image-guided audio transcription correction.
 
-This script uses a fixed JSON ASR prompt and skips only the initial_prompt_node.
-The rest of the graph runs normally:
-frontend evidence -> initial plan -> planner/tools/evidence fusion -> final answer.
+This demo extends the full API mode flow:
+- Registers Qwen VL OCR and Qwen Omni image captioning tools
+- Passes images to the agent as first-class `image_0`, `image_1`, ... inputs
+- Run the audio agent with API frontend + API planner
+
+Use this when screenshots, slides, menus, labels, lyric sheets, or document images
+can help correct ASR/transcription mistakes in the audio.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import sys
-import tempfile
+import time
 from pathlib import Path
 
 # Add project root to path for direct execution
@@ -21,12 +26,9 @@ project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from langgraph.graph import END, START, StateGraph
-
 from audio_agent.config.settings import AgentConfig
 from audio_agent.core.constants import AgentStatus
-from audio_agent.core.logging import set_debug_mode, setup_logger
-from audio_agent.core.state import AgentState
+from audio_agent.core.logging import setup_logger, set_debug_mode
 from audio_agent.examples.demo_run_api_full import (
     LOCAL_MODEL_TOOL_NAMES,
     print_evidence_log,
@@ -35,185 +37,63 @@ from audio_agent.examples.demo_run_api_full import (
     print_separator,
     print_tool_history,
 )
-from audio_agent.frontend.base import BaseFrontend
 from audio_agent.frontend.openai_compatible_frontend import OpenAICompatibleFrontend
-from audio_agent.fusion.base import BaseEvidenceFuser
 from audio_agent.fusion.default_fuser import DefaultEvidenceFuser
-from audio_agent.graph.nodes import (
-    answer_node,
-    create_evidence_fusion_node,
-    create_evidence_summarization_node,
-    create_final_answer_node,
-    create_format_check_node,
-    create_frontend_evidence_node,
-    create_initial_plan_node,
-    create_intent_clarification_node,
-    create_parallel_initial_tools_node,
-    create_planner_decision_node,
-    create_tool_executor_node,
-    failure_node,
-)
-from audio_agent.graph.routing import (
-    NODE_ANSWER,
-    NODE_EVIDENCE_FUSION,
-    NODE_EVIDENCE_SUMMARIZATION,
-    NODE_FAILURE,
-    NODE_FINAL_ANSWER,
-    NODE_FORMAT_CHECK,
-    NODE_INITIAL_PLAN,
-    NODE_INTENT_CLARIFICATION,
-    NODE_PARALLEL_INITIAL_TOOLS,
-    NODE_PLANNER_DECISION,
-    NODE_TOOL_EXECUTOR,
-    route_after_format_check,
-    route_after_planner_decision,
-)
-from audio_agent.log import RunLogger
+from audio_agent.critic.openai_compatible_critic import OpenAICompatibleCritic
 from audio_agent.main import AudioAgent
-from audio_agent.planner.base import BasePlanner
 from audio_agent.planner.openai_compatible_planner import OpenAICompatiblePlanner
 from audio_agent.tools.catalog import list_available_tools, register_all_mcp_tools
-from audio_agent.tools.executor import ToolExecutor
 from audio_agent.tools.mcp import MCPServerManager
 from audio_agent.tools.registry import ToolRegistry
 from audio_agent.utils.audio_path import resolve_audio_input_paths
 
-DEFAULT_ASR_PROMPT = (
-    "Transcribe the audio to text. Return only one valid JSON object with exactly this "
-    'schema: {"pred": "<transcript>"}. Do not include markdown, explanations, or extra keys.'
-)
-# Default OpenAI-compatible endpoint (DashScope). Shared by frontend and planner unless overridden.
-DEFAULT_COMPAT_API_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-NODE_FRONTEND_EVIDENCE = "frontend_evidence_node"
+IMAGE_TOOL_SERVERS = ["qwen_vl_ocr", "image_captioner", "image_qa"]
 
 
-def build_frontend_first_graph(
-    frontend: BaseFrontend,
-    planner: BasePlanner,
-    registry: ToolRegistry,
-    fuser: BaseEvidenceFuser,
-):
-    """Build the standard graph without the initial prompt node."""
-    if frontend is None:
-        raise ValueError("frontend cannot be None")
-    if planner is None:
-        raise ValueError("planner cannot be None")
-    if registry is None:
-        raise ValueError("registry cannot be None")
-    if fuser is None:
-        raise ValueError("fuser cannot be None")
-
-    executor = ToolExecutor(registry)
-
-    frontend_node = create_frontend_evidence_node(frontend)
-    initial_plan_node_fn = create_initial_plan_node(planner, registry)
-    parallel_initial_tools_node_fn = create_parallel_initial_tools_node(executor, fuser, registry)
-    planner_decision_node_fn = create_planner_decision_node(planner, registry)
-    tool_executor_node_fn = create_tool_executor_node(executor)
-    evidence_fusion_node_fn = create_evidence_fusion_node(fuser)
-    intent_clarification_node_fn = create_intent_clarification_node(planner)
-    evidence_summarization_node_fn = create_evidence_summarization_node(planner)
-    final_answer_node_fn = create_final_answer_node(frontend)
-    format_check_node_fn = create_format_check_node(planner)
-
-    graph = StateGraph(AgentState)
-
-    graph.add_node(NODE_FRONTEND_EVIDENCE, frontend_node)
-    graph.add_node(NODE_INITIAL_PLAN, initial_plan_node_fn)
-    graph.add_node(NODE_PARALLEL_INITIAL_TOOLS, parallel_initial_tools_node_fn)
-    graph.add_node(NODE_PLANNER_DECISION, planner_decision_node_fn)
-    graph.add_node(NODE_TOOL_EXECUTOR, tool_executor_node_fn)
-    graph.add_node(NODE_EVIDENCE_FUSION, evidence_fusion_node_fn)
-    graph.add_node(NODE_INTENT_CLARIFICATION, intent_clarification_node_fn)
-    graph.add_node(NODE_EVIDENCE_SUMMARIZATION, evidence_summarization_node_fn)
-    graph.add_node(NODE_FINAL_ANSWER, final_answer_node_fn)
-    graph.add_node(NODE_FORMAT_CHECK, format_check_node_fn)
-    graph.add_node(NODE_ANSWER, answer_node)
-    graph.add_node(NODE_FAILURE, failure_node)
-
-    graph.add_edge(START, NODE_FRONTEND_EVIDENCE)
-    graph.add_edge(NODE_FRONTEND_EVIDENCE, NODE_INITIAL_PLAN)
-    graph.add_edge(NODE_INITIAL_PLAN, NODE_PARALLEL_INITIAL_TOOLS)
-    graph.add_edge(NODE_PARALLEL_INITIAL_TOOLS, NODE_PLANNER_DECISION)
-    graph.add_conditional_edges(
-        NODE_PLANNER_DECISION,
-        route_after_planner_decision,
-        {
-            NODE_EVIDENCE_SUMMARIZATION: NODE_EVIDENCE_SUMMARIZATION,
-            NODE_TOOL_EXECUTOR: NODE_TOOL_EXECUTOR,
-            NODE_INTENT_CLARIFICATION: NODE_INTENT_CLARIFICATION,
-            NODE_FAILURE: NODE_FAILURE,
-        },
-    )
-    graph.add_conditional_edges(
-        NODE_FORMAT_CHECK,
-        route_after_format_check,
-        {
-            NODE_ANSWER: NODE_ANSWER,
-            NODE_PLANNER_DECISION: NODE_PLANNER_DECISION,
-        },
-    )
-    graph.add_edge(NODE_TOOL_EXECUTOR, NODE_EVIDENCE_FUSION)
-    graph.add_edge(NODE_EVIDENCE_FUSION, NODE_PLANNER_DECISION)
-    graph.add_edge(NODE_EVIDENCE_SUMMARIZATION, NODE_FINAL_ANSWER)
-    graph.add_edge(NODE_FINAL_ANSWER, NODE_FORMAT_CHECK)
-    graph.add_edge(NODE_INTENT_CLARIFICATION, NODE_PLANNER_DECISION)
-    graph.add_edge(NODE_ANSWER, END)
-    graph.add_edge(NODE_FAILURE, END)
-
-    return graph.compile()
-
-
-class FrontendFirstAudioAgent(AudioAgent):
-    """AudioAgent variant whose graph starts from frontend_evidence_node."""
-
-    def __init__(
-        self,
-        frontend: BaseFrontend,
-        planner: BasePlanner,
-        registry: ToolRegistry,
-        fuser: BaseEvidenceFuser,
-        config: AgentConfig | None = None,
-    ) -> None:
-        if frontend is None:
-            raise ValueError("frontend cannot be None")
-        if planner is None:
-            raise ValueError("planner cannot be None")
-        if registry is None:
-            raise ValueError("registry cannot be None")
-        if fuser is None:
-            raise ValueError("fuser cannot be None")
-
-        self.frontend = frontend
-        self.planner = planner
-        self.registry = registry
-        self.fuser = fuser
-        self.config = config or AgentConfig()
-        self._temp_dir: str | None = None
-
-        setup_logger()
-        if self.config.debug:
-            set_debug_mode(True)
-
-        self._graph = build_frontend_first_graph(frontend, planner, registry, fuser)
-        self._run_logger: RunLogger | None = None
-        if self.config.enable_run_logging:
-            self._run_logger = RunLogger(log_dir=self.config.log_dir)
+def _agent_debug_log(hypothesis_id: str, message: str, data: dict) -> None:
+    """Write one debug NDJSON entry for the active Cursor debug session."""
+    # region agent log
+    payload = {
+        "sessionId": "b99362",
+        "runId": "pre-fix",
+        "hypothesisId": hypothesis_id,
+        "location": "audio_agent/examples/demo_run_api_full_image_correction.py",
+        "message": message,
+        "data": data,
+        "timestamp": int(time.time() * 1000),
+    }
+    try:
+        with open("/workspace/.cursor/debug-b99362.log", "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        pass
+    # endregion agent log
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build command-line parser for the ASR demo."""
+    """Build command-line parser for the demo."""
     parser = argparse.ArgumentParser(
         description=(
-            "Run an API ASR agent demo that skips initial_prompt_node and uses "
-            f"the fixed prompt {DEFAULT_ASR_PROMPT!r}."
+            "Run the full API audio agent with first-class reference images for "
+            "OCR/caption-guided speech recognition correction."
         )
     )
     parser.add_argument(
         "--audio",
         required=True,
         nargs="+",
-        help="Path(s) to input audio file(s). Kaldi-style ark offsets are supported.",
+        help="Path(s) to the input audio file(s).",
+    )
+    parser.add_argument(
+        "--image",
+        required=True,
+        nargs="+",
+        help="Path(s) to image(s) whose text/visual content should guide ASR correction.",
+    )
+    parser.add_argument(
+        "--question",
+        default="Transcribe what is being said. Use the image context to correct likely ASR mistakes.",
+        help="Question to ask about the audio.",
     )
     parser.add_argument(
         "--frontend-model",
@@ -232,22 +112,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--base-url",
-        default=DEFAULT_COMPAT_API_BASE_URL,
-        help=(
-            "OpenAI-compatible base URL for the frontend API; also used for the planner "
-            "unless --planner-base-url is set "
-            f"(default: {DEFAULT_COMPAT_API_BASE_URL})."
-        ),
-    )
-    parser.add_argument(
-        "--planner-api-key",
-        default=None,
-        help="API key for the planner only. Defaults to --api-key/env key when omitted.",
-    )
-    parser.add_argument(
-        "--planner-base-url",
-        default=None,
-        help="OpenAI-compatible base URL for the planner only; defaults to --base-url when omitted.",
+        default="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        help="API base URL.",
     )
     parser.add_argument(
         "--enable-thinking",
@@ -276,7 +142,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--tools",
         nargs="+",
         default=None,
-        help="Specific catalog tool servers to register. Defaults to non-local-model tools.",
+        help=(
+            "Specific catalog tool servers to register. qwen_vl_ocr and image_captioner "
+            "are always added for image analysis."
+        ),
     )
     parser.add_argument(
         "--include-local-model-tools",
@@ -288,35 +157,32 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="List available catalog tool servers and exit.",
     )
-    parser.add_argument(
-        "--external-memory-text",
-        default=None,
-        help="History transcript text exposed by the dummy external_memory_retrieve tool.",
-    )
-    parser.add_argument(
-        "--external-memory-path",
-        default=None,
-        help="Path to history transcript text exposed by the dummy external_memory_retrieve tool.",
-    )
     return parser
 
 
 def select_tool_servers(args: argparse.Namespace) -> tuple[list[str], list[str]]:
-    """Select catalog tool servers for the ASR graph."""
+    """Select catalog tool servers and ensure image-analysis servers are included."""
     if args.tools is not None:
-        return args.tools, []
+        selected = list(dict.fromkeys([*args.tools, *IMAGE_TOOL_SERVERS]))
+        return selected, []
 
     available_tools = list_available_tools()
     if args.include_local_model_tools:
-        return available_tools, []
+        selected = available_tools
+        excluded: list[str] = []
+    else:
+        selected = [tool for tool in available_tools if tool not in LOCAL_MODEL_TOOL_NAMES]
+        excluded = [tool for tool in available_tools if tool in LOCAL_MODEL_TOOL_NAMES]
 
-    selected = [tool for tool in available_tools if tool not in LOCAL_MODEL_TOOL_NAMES]
-    excluded = [tool for tool in available_tools if tool in LOCAL_MODEL_TOOL_NAMES]
+    for tool_name in IMAGE_TOOL_SERVERS:
+        if tool_name not in selected:
+            selected.append(tool_name)
+
     return selected, excluded
 
 
 async def amain() -> int:
-    """Run the ASR demo."""
+    """Run the demo."""
     parser = build_parser()
 
     if "--list-tools" in sys.argv:
@@ -327,47 +193,32 @@ async def amain() -> int:
 
     args = parser.parse_args()
     selected_tools, excluded_tools = select_tool_servers(args)
-    memory_temp_path: str | None = None
-    previous_memory_path = os.environ.get("EXTERNAL_MEMORY_PATH")
-    previous_memory_text = os.environ.get("EXTERNAL_MEMORY_TEXT")
+    _agent_debug_log(
+        "H2",
+        "selected_tool_servers",
+        {
+            "selected_tools": selected_tools,
+            "excluded_tools": excluded_tools,
+            "image_tool_servers": IMAGE_TOOL_SERVERS,
+        },
+    )
 
     api_key = args.api_key or os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    planner_api_key = args.planner_api_key or api_key
     if not api_key:
         print("Error: API key required. Provide --api-key or set DASHSCOPE_API_KEY / OPENAI_API_KEY.")
         return 1
 
-    try:
-        audio_paths = resolve_audio_input_paths(args.audio)
-    except Exception as exc:
-        print(f"Failed to resolve audio input: {type(exc).__name__}: {exc}")
-        return 1
+    audio_paths = resolve_audio_input_paths(args.audio)
+    image_paths = [str(Path(path).resolve()) for path in args.image]
 
-    if args.external_memory_path:
-        os.environ["EXTERNAL_MEMORY_PATH"] = args.external_memory_path
-        os.environ.pop("EXTERNAL_MEMORY_TEXT", None)
-    elif args.external_memory_text is not None:
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt", delete=False) as handle:
-            handle.write(args.external_memory_text)
-            memory_temp_path = handle.name
-        os.environ["EXTERNAL_MEMORY_PATH"] = memory_temp_path
-        os.environ["EXTERNAL_MEMORY_TEXT"] = args.external_memory_text
-
-    print_separator("Audio Agent Demo (ASR, Frontend-First Graph)")
-    print(f"\nPrompt: {DEFAULT_ASR_PROMPT}")
-    planner_base_url = args.planner_base_url or args.base_url
-    print(f"- {args.frontend_model} frontend (API-based, base URL: {args.base_url})")
-    print(f"- {args.planner_model} planner (API-based, base URL: {planner_base_url})")
-    print("- Graph starts at frontend_evidence_node; initial_prompt_node is skipped")
+    print_separator("Audio Agent Demo (Image-Guided ASR Correction)")
+    print("\nThis demo runs with:")
+    print(f"- {args.frontend_model} frontend (API-based)")
+    print(f"- {args.planner_model} planner (API-based)")
+    print(f"- Image tools: {', '.join(IMAGE_TOOL_SERVERS)}")
     print(f"- Auto-registered MCP tool servers: {', '.join(selected_tools)}")
     if excluded_tools:
         print(f"- Skipped local model tools: {', '.join(excluded_tools)}")
-    if len(audio_paths) == 1:
-        print(f"Audio path: {audio_paths[0]}")
-    else:
-        print(f"Audio paths ({len(audio_paths)}):")
-        for index, audio_path in enumerate(audio_paths, 1):
-            print(f"  [{index}] {audio_path}")
 
     setup_logger()
     set_debug_mode(True)
@@ -385,10 +236,17 @@ async def amain() -> int:
         )
         planner = OpenAICompatiblePlanner(
             model=args.planner_model,
-            api_key=planner_api_key,
-            base_url=planner_base_url,
+            api_key=api_key,
+            base_url=args.base_url,
             enable_thinking=args.enable_thinking,
             temperature=args.temperature,
+            max_tokens=args.max_tokens,
+        )
+        critic = OpenAICompatibleCritic(
+            model=args.planner_model,
+            api_key=api_key,
+            base_url=args.base_url,
+            temperature=0.0,
             max_tokens=args.max_tokens,
         )
         registry = ToolRegistry()
@@ -401,27 +259,62 @@ async def amain() -> int:
             tool_names=selected_tools,
             verbose=True,
         )
+        _agent_debug_log(
+            "H2,H3",
+            "registered_tools_after_catalog_registration",
+            {
+                "registered_tools": registered_tools,
+                "registry_names": registry.list_names(),
+                "has_image_qa": "image_qa" in registry,
+                "has_kw_verify": "kw_verify" in registry,
+                "has_external_memory": "external_memory_retrieve" in registry,
+            },
+        )
 
-        if not registered_tools:
-            print("\nWarning: No MCP tools were registered.")
-            print("Make sure tools are set up:")
-            print("  cd audio_agent/tools/catalog/<tool_name> && ./setup.sh")
+        missing_required = {"qwen_vl_ocr", "image_caption", "image_qa"} - set(registered_tools)
+        if missing_required:
+            _agent_debug_log(
+                "H2,H4",
+                "exiting_before_agent_due_missing_required_tools",
+                {
+                    "missing_required": sorted(missing_required),
+                    "registered_tools": registered_tools,
+                    "will_call_agent_arun": False,
+                },
+            )
+            print(f"\nMissing required image tools: {', '.join(sorted(missing_required))}")
+            return 1
 
-        agent = FrontendFirstAudioAgent(
+        print_separator("Image Inputs Registered")
+        for index, image_path in enumerate(image_paths):
+            print(f"- image_{index}: {image_path}")
+
+        agent = AudioAgent(
             frontend=frontend,
             planner=planner,
             registry=registry,
             fuser=fuser,
             config=config,
+            critic=critic,
         )
 
         print_separator("Running Agent")
+        _agent_debug_log(
+            "H4",
+            "about_to_call_agent_arun",
+            {"will_call_agent_arun": True, "audio_count": len(audio_paths), "image_count": len(image_paths)},
+        )
+        print(f"\nOriginal question: {args.question}")
+        print(f"Audio paths: {audio_paths}")
+        print(f"Image paths: {image_paths}")
+
         final_state = await agent.arun(
-            question=DEFAULT_ASR_PROMPT,
+            question=args.question,
             audio_paths=audio_paths,
             max_steps=args.max_steps,
-            run_log_name="api_asr_frontend_first",
+            image_paths=image_paths,
         )
+
     except Exception as exc:
         print(f"\nDemo failed with error: {type(exc).__name__}: {exc}")
         import traceback
@@ -431,19 +324,6 @@ async def amain() -> int:
     finally:
         print("\nShutting down MCP servers...")
         await server_manager.shutdown_all()
-        if previous_memory_path is None:
-            os.environ.pop("EXTERNAL_MEMORY_PATH", None)
-        else:
-            os.environ["EXTERNAL_MEMORY_PATH"] = previous_memory_path
-        if previous_memory_text is None:
-            os.environ.pop("EXTERNAL_MEMORY_TEXT", None)
-        else:
-            os.environ["EXTERNAL_MEMORY_TEXT"] = previous_memory_text
-        if memory_temp_path:
-            try:
-                Path(memory_temp_path).unlink()
-            except OSError:
-                pass
 
     print_separator("Results")
     status = final_state.get("status", AgentStatus.RUNNING)
@@ -473,7 +353,7 @@ async def amain() -> int:
 
     final_answer = final_state.get("final_answer")
     if final_answer:
-        print_separator("Final Transcript")
+        print_separator("Final Answer")
         print(f"\n{final_answer.answer}")
         print(f"\nConfidence: {final_answer.confidence:.2f}")
 
@@ -492,7 +372,7 @@ async def amain() -> int:
 
 
 def main() -> int:
-    """Run the ASR demo entry point."""
+    """Run the demo entry point."""
     return asyncio.run(amain())
 
 

@@ -27,7 +27,7 @@ from audio_agent.log.formatter import (
     format_audio_list,
     format_image_list,
     format_frontend_final_answer,
-    format_format_check_result,
+    format_critic_result,
     format_error,
     sanitize_filename,
 )
@@ -198,9 +198,9 @@ class RunLogger:
         # Frontend Final Answer
         sections.append(format_frontend_final_answer(planner_trace))
 
-        # Format Check Result
-        format_check_result = state.get("format_check_result")
-        sections.append(format_format_check_result(format_check_result))
+        # Critic Result
+        critic_result = state.get("critic_result")
+        sections.append(format_critic_result(critic_result))
         
         # Final Answer
         final_answer = state.get("final_answer")

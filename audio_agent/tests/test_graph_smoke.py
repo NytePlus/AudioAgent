@@ -45,6 +45,9 @@ class TestGraphSmoke:
             assert final_state["status"] == AgentStatus.ANSWERED
             assert final_state["final_answer"] is not None
             assert final_state["initial_plan"] is not None
+            assert final_state["initial_transcript"] is not None
+            assert final_state["critic_result"] is not None
+            assert final_state["critic_result"].passed is True
             assert len(final_state["initial_plan_trace"]) >= 1
             assert len(final_state["evidence_log"]) > 0
             assert len(final_state["tool_call_history"]) > 0

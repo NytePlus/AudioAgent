@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import mimetypes
 import os
 from dataclasses import dataclass
@@ -14,9 +15,12 @@ class ImageQAResult:
     """Image QA result returned by the model API."""
 
     answer: str
+    passed: bool
+    reason: str
     model: str
     image_path: str
     question: str
+    parsed_data: dict
 
 
 class ImageQAModel:
@@ -63,7 +67,12 @@ class ImageQAModel:
 
         prompt = (
             "Answer the user's question based only on the provided image. "
-            "If the image does not contain enough evidence, say so clearly.\n\n"
+            "Return only valid JSON with this schema: "
+            '{"passed": true|false, "reason": "<concise reason>", "answer": "<answer>"}. '
+            "If the question asks whether something contradicts the image, `passed` means "
+            "the proposed content does not contradict the image. If the image clearly "
+            "contradicts it, set `passed` to false. If evidence is missing or ambiguous, "
+            "set `passed` to true and explain the uncertainty in `reason`.\n\n"
             f"Question: {question.strip()}"
         )
         messages = [
@@ -83,12 +92,35 @@ class ImageQAModel:
             max_tokens=self.max_tokens,
         )
         answer = completion.choices[0].message.content or ""
+        parsed = self._parse_json(answer)
+        reason = str(parsed.get("reason") or parsed.get("answer") or answer).strip()
+        normalized_answer = str(parsed.get("answer") or reason).strip()
         return ImageQAResult(
-            answer=answer,
+            answer=normalized_answer,
+            passed=bool(parsed.get("passed", True)),
+            reason=reason,
             model=self.model,
             image_path=str(image_path),
             question=question.strip(),
+            parsed_data=parsed,
         )
+
+    @staticmethod
+    def _parse_json(text: str) -> dict:
+        stripped = text.strip()
+        if stripped.startswith("```"):
+            stripped = stripped.strip("`").strip()
+            if stripped.lower().startswith("json"):
+                stripped = stripped[4:].strip()
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start >= 0 and end >= start:
+            stripped = stripped[start : end + 1]
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            return {"passed": True, "reason": text, "answer": text}
+        return parsed if isinstance(parsed, dict) else {"passed": True, "reason": text, "answer": text}
 
     @staticmethod
     def _image_data_url(image_path: Path) -> str:

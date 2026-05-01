@@ -1,0 +1,13 @@
+[project]
+name = "external-memory-tool"
+version = "1.0.0"
+description = "Dummy external memory retrieval MCP tool for run-supplied history transcripts"
+requires-python = ">=3.11"
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["server"]

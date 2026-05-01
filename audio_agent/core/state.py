@@ -19,6 +19,7 @@ from audio_agent.core.schemas import (
     AudioItem,
     ImageItem,
     FormatCheckResult,
+    CriticResult,
 )
 from audio_agent.core.constants import AgentStatus
 
@@ -59,6 +60,9 @@ class AgentState(TypedDict, total=False):
         planner_trace: Log of planner action decisions (append-only)
         current_decision: Latest planner decision
         latest_tool_result: Most recent tool execution result (transient)
+        initial_transcript: Initial transcript extracted from frontend evidence
+        critic_result: Latest final-answer critic result
+        critic_count: Number of critic checks performed
         final_answer: The final answer if agent completed successfully
         error_message: Error message if agent failed
         step_count: Current step number
@@ -96,10 +100,17 @@ class AgentState(TypedDict, total=False):
     
     # Question-oriented prompt for frontend captioning
     question_oriented_prompt: str | None
+
+    # Initial transcript extracted from frontend evidence for critic comparison
+    initial_transcript: str | None
     
     # Format check (mandatory format validation before final answer)
     format_check_result: FormatCheckResult | None
     format_check_count: int  # Track number of format checks to prevent loops
+
+    # Critic result (replaces format check in the final-answer path)
+    critic_result: CriticResult | None
+    critic_count: int
     
     # Evidence summary (consolidated narrative before final answer)
     evidence_summary: str | None
@@ -173,8 +184,11 @@ def create_initial_state(
         clarified_intent=None,
         expected_output_format=None,
         question_oriented_prompt=None,
+        initial_transcript=None,
         format_check_result=None,
         format_check_count=0,
+        critic_result=None,
+        critic_count=0,
         evidence_summary=None,
         final_answer=None,
         error_message=None,

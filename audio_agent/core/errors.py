@@ -40,6 +40,11 @@ class PlannerError(AudioAgentError):
     pass
 
 
+class CriticError(AudioAgentError):
+    """Raised when the critic produces invalid output or fails."""
+    pass
+
+
 class FrontendError(AudioAgentError):
     """Raised when the frontend fails to process input or returns invalid output."""
     pass

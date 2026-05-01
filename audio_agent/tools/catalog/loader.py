@@ -8,6 +8,8 @@ from catalog directories with proper path resolution.
 
 from __future__ import annotations
 
+import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +20,27 @@ except ImportError:
     HAS_YAML = False
 
 from audio_agent.tools.mcp.schemas import MCPServerConfig
+
+
+def _agent_debug_log(hypothesis_id: str, message: str, data: dict[str, Any]) -> None:
+    """Write one debug NDJSON entry for the active Cursor debug session."""
+    # region agent log
+    payload = {
+        "sessionId": "b99362",
+        "runId": "pre-fix",
+        "hypothesisId": hypothesis_id,
+        "location": "audio_agent/tools/catalog/loader.py",
+        "message": message,
+        "data": data,
+        "timestamp": int(time.time() * 1000),
+    }
+    try:
+        Path("/workspace/.cursor").mkdir(parents=True, exist_ok=True)
+        with open("/workspace/.cursor/debug-b99362.log", "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        pass
+    # endregion agent log
 
 # Type hints for optional imports
 if False:
@@ -299,6 +322,34 @@ async def register_all_mcp_tools(
                     print(f"  ✓ Registered: {tool_info.name}")
             
         except Exception as e:
+            # region agent log
+            try:
+                config = load_mcp_server_config(tool_name, catalog_dir)
+                command0 = config.command[0] if config.command else ""
+                command_path = (
+                    str((Path(config.working_dir) / command0).resolve())
+                    if config.working_dir and command0 and not Path(command0).is_absolute()
+                    else command0
+                )
+                _agent_debug_log(
+                    "H1",
+                    "mcp_tool_registration_failed",
+                    {
+                        "tool_name": tool_name,
+                        "error": str(e),
+                        "command": config.command,
+                        "working_dir": config.working_dir,
+                        "command_path": command_path,
+                        "command_exists": Path(command_path).exists() if command_path else False,
+                    },
+                )
+            except Exception as debug_exc:
+                _agent_debug_log(
+                    "H1",
+                    "mcp_tool_registration_failed_debug_probe_failed",
+                    {"tool_name": tool_name, "error": str(e), "debug_error": str(debug_exc)},
+                )
+            # endregion agent log
             if verbose:
                 print(f"  ✗ Failed to register {tool_name}: {e}")
             # Continue with other tools even if one fails

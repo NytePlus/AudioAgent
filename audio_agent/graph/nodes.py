@@ -22,7 +22,6 @@ from audio_agent.core.schemas import (
     AudioItem,
     ImageItem,
     AudioOutput,
-    FormatCheckResult,
 )
 from audio_agent.core.constants import AgentStatus
 from audio_agent.core.errors import (
@@ -32,6 +31,7 @@ from audio_agent.core.errors import (
     ToolExecutionError,
     ToolRegistryError,
     FusionError,
+    CriticError,
 )
 from audio_agent.core.logging import (
     log_node_start,
@@ -45,9 +45,11 @@ from audio_agent.core.logging import (
 from audio_agent.utils.validation import validate_state_has_fields
 from audio_agent.frontend.base import BaseFrontend
 from audio_agent.planner.base import BasePlanner
+from audio_agent.critic.base import BaseCritic
 from audio_agent.tools.executor import ToolExecutor
 from audio_agent.tools.registry import ToolRegistry
 from audio_agent.fusion.base import BaseEvidenceFuser
+from audio_agent.utils.transcript import extract_transcript_text
 
 
 def _build_audio_description(tool_name: str, args: dict, source_audio_id: str | None) -> str:
@@ -421,6 +423,8 @@ def create_frontend_evidence_node(frontend: BaseFrontend):
                 details={"frontend": frontend.name}
             )
         
+        initial_transcript = extract_transcript_text(output.question_guided_caption)
+
         # Create initial evidence from frontend output
         initial_evidence = EvidenceItem(
             source=f"frontend:{frontend.name}",
@@ -439,6 +443,7 @@ def create_frontend_evidence_node(frontend: BaseFrontend):
 
         return {
             "initial_frontend_output": output,
+            "initial_transcript": initial_transcript,
             "evidence_log": [initial_evidence],
         }
     
@@ -1222,8 +1227,13 @@ def create_final_answer_node(frontend: BaseFrontend):
 
         # Build context for the frontend
         format_check_result = state.get("format_check_result")
+        critic_result = state.get("critic_result")
         format_critique = None
-        if format_check_result and not format_check_result.passed:
+        critic_critique = None
+        if critic_result and not critic_result.passed:
+            critic_critique = critic_result.reject_reason or critic_result.critique
+            format_critique = critic_result.reject_reason or critic_result.critique
+        elif format_check_result and not format_check_result.passed:
             format_critique = format_check_result.critique
 
         context = {
@@ -1235,9 +1245,12 @@ def create_final_answer_node(frontend: BaseFrontend):
             "initial_frontend_output": state.get("initial_frontend_output"),
             "clarified_intent": state.get("clarified_intent"),
             "expected_output_format": state.get("expected_output_format"),
+            "initial_transcript": state.get("initial_transcript"),
             "audio_list": audio_list,
             "image_list": state.get("image_list", []),
             "format_critique": format_critique,
+            "critic_critique": critic_critique,
+            "critic_reject_reason": critic_result.reject_reason if critic_result else None,
         }
 
         try:
@@ -1498,6 +1511,112 @@ def failure_node(state: AgentState) -> dict:
     }
 
 
+def create_critic_node(critic: BaseCritic, executor: ToolExecutor, registry: ToolRegistry):
+    """
+    Factory to create the final-answer critic node.
+
+    The critic replaces the previous format-check node and may call tools to
+    validate image consistency, audio-supported transcript edits, and memory
+    consistency before the final answer is accepted.
+    """
+    if critic is None:
+        raise ValueError("critic cannot be None")
+    if executor is None:
+        raise ValueError("executor cannot be None")
+    if registry is None:
+        raise ValueError("registry cannot be None")
+
+    async def critic_node(state: AgentState) -> dict:
+        """
+        Critique the proposed answer in current_decision.
+
+        Updates:
+        - critic_result
+        - critic_count
+        - evidence_log (appends critic critique as evidence if failed)
+        """
+        log_node_start("critic_node")
+
+        validate_state_has_fields(
+            state,
+            ["current_decision", "question"],
+            context="critic_node",
+        )
+
+        decision: PlannerDecision = state["current_decision"]
+        if decision.action != PlannerActionType.ANSWER:
+            raise StateValidationError(
+                f"critic_node called with non-ANSWER action: {decision.action}",
+                details={"action": decision.action.value},
+            )
+        if not decision.draft_answer:
+            raise StateValidationError(
+                "ANSWER decision has no draft_answer for critic",
+                details={"decision": decision.model_dump()},
+            )
+
+        try:
+            critic_result = await critic.critique(state, executor, registry)
+        except CriticError:
+            raise
+        except Exception as e:
+            log_error("critic_node", e)
+            raise CriticError(
+                f"Critic failed: {e}",
+                details={"critic": critic.name},
+            ) from e
+
+        if critic_result is None:
+            raise CriticError(
+                "Critic returned None",
+                details={"critic": critic.name},
+            )
+
+        current_count = state.get("critic_count", 0)
+        updates: dict = {
+            "critic_result": critic_result,
+            "critic_count": current_count + 1,
+        }
+
+        reject_reason = critic_result.reject_reason or critic_result.critique
+        log_info(
+            "critic_final_result",
+            {
+                "passed": critic_result.passed,
+                "reason": reject_reason or "Critic passed.",
+            },
+        )
+        if not critic_result.passed and reject_reason:
+            critique_evidence = EvidenceItem(
+                source=f"critic:{critic.name}",
+                content=f"Critic rejected final answer: {reject_reason}",
+                evidence_type="critic_critique",
+                confidence=critic_result.confidence,
+                metadata={
+                    "critic_passed": critic_result.passed,
+                    "reject_reason": reject_reason,
+                    "checks": [check.model_dump(mode="json") for check in critic_result.checks],
+                    "transcript_edits": [
+                        edit.model_dump(mode="json") for edit in critic_result.transcript_edits
+                    ],
+                },
+            )
+            updates["evidence_log"] = [critique_evidence]
+
+        log_node_end(
+            "critic_node",
+            {
+                "passed": critic_result.passed,
+                "confidence": critic_result.confidence,
+                "check_count": len(critic_result.checks),
+                "reject_reason": reject_reason,
+            },
+        )
+        return updates
+
+    return critic_node
+
+
 def create_format_check_node(planner: BasePlanner):
     """
     Factory to create a format check node.
@@ -1626,5 +1745,6 @@ tool_executor_node = create_tool_executor_node
 parallel_initial_tools_node = create_parallel_initial_tools_node
 evidence_fusion_node = create_evidence_fusion_node
 final_answer_node = create_final_answer_node
+critic_node = create_critic_node
 format_check_node = create_format_check_node
 intent_clarification_node = create_intent_clarification_node

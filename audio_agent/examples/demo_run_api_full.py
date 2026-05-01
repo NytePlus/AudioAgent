@@ -49,6 +49,7 @@ from audio_agent.core.constants import AgentStatus
 from audio_agent.core.logging import setup_logger, set_debug_mode
 from audio_agent.fusion.default_fuser import DefaultEvidenceFuser
 from audio_agent.frontend.openai_compatible_frontend import OpenAICompatibleFrontend
+from audio_agent.critic.openai_compatible_critic import OpenAICompatibleCritic
 from audio_agent.main import AudioAgent
 from audio_agent.planner.openai_compatible_planner import OpenAICompatiblePlanner
 from audio_agent.tools.registry import ToolRegistry
@@ -312,6 +313,13 @@ async def amain() -> int:
             temperature=args.temperature,
             max_tokens=args.max_tokens,
         )
+        critic = OpenAICompatibleCritic(
+            model=args.planner_model,
+            api_key=api_key,
+            base_url=args.base_url,
+            temperature=0.0,
+            max_tokens=args.max_tokens,
+        )
         registry = ToolRegistry()
         fuser = DefaultEvidenceFuser()
         
@@ -339,6 +347,7 @@ async def amain() -> int:
             registry=registry,
             fuser=fuser,
             config=config,
+            critic=critic,
         )
         
     except Exception as e:

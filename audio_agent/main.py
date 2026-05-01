@@ -17,6 +17,8 @@ from audio_agent.config.settings import AgentConfig
 from audio_agent.graph.builder import build_graph
 from audio_agent.frontend.base import BaseFrontend
 from audio_agent.planner.base import BasePlanner
+from audio_agent.critic.base import BaseCritic
+from audio_agent.critic.dummy_critic import DummyCritic
 from audio_agent.tools.registry import ToolRegistry
 from audio_agent.fusion.base import BaseEvidenceFuser
 from audio_agent.log import RunLogger
@@ -37,6 +39,7 @@ class AudioAgent:
         registry: ToolRegistry,
         fuser: BaseEvidenceFuser,
         config: AgentConfig | None = None,
+        critic: BaseCritic | None = None,
     ) -> None:
         """
         Initialize the audio agent.
@@ -47,11 +50,14 @@ class AudioAgent:
             registry: Tool registry with available tools
             fuser: Evidence fuser for tool results
             config: Optional configuration
+            critic: Optional critic for final answer validation
         """
         if frontend is None:
             raise ValueError("frontend cannot be None")
         if planner is None:
             raise ValueError("planner cannot be None")
+        if critic is None:
+            critic = DummyCritic()
         if registry is None:
             raise ValueError("registry cannot be None")
         if fuser is None:
@@ -59,6 +65,7 @@ class AudioAgent:
         
         self.frontend = frontend
         self.planner = planner
+        self.critic = critic
         self.registry = registry
         self.fuser = fuser
         self.config = config or AgentConfig()
@@ -70,7 +77,7 @@ class AudioAgent:
             set_debug_mode(True)
         
         # Build the graph
-        self._graph = build_graph(frontend, planner, registry, fuser)
+        self._graph = build_graph(frontend, planner, registry, fuser, critic=critic)
         
         # Set up run logger
         self._run_logger: RunLogger | None = None
@@ -334,11 +341,13 @@ def create_dummy_agent(config: AgentConfig | None = None) -> AudioAgent:
     """
     from audio_agent.frontend.dummy_frontend import DummyFrontend
     from audio_agent.planner.dummy_planner import DummyPlanner
+    from audio_agent.critic.dummy_critic import DummyCritic
     from audio_agent.tools.dummy_tools import DummyASRTool, DummyAudioEventDetectorTool
     from audio_agent.fusion.default_fuser import DefaultEvidenceFuser
     
     frontend = DummyFrontend()
     planner = DummyPlanner()
+    critic = DummyCritic()
     registry = ToolRegistry()
     registry.register(DummyASRTool())
     registry.register(DummyAudioEventDetectorTool())
@@ -347,6 +356,7 @@ def create_dummy_agent(config: AgentConfig | None = None) -> AudioAgent:
     return AudioAgent(
         frontend=frontend,
         planner=planner,
+        critic=critic,
         registry=registry,
         fuser=fuser,
         config=config,
@@ -402,5 +412,22 @@ def create_openai_planner(
         api_key=api_key,
         base_url=base_url,
         enable_thinking=enable_thinking,
+        **kwargs,
+    )
+
+
+def create_openai_critic(
+    model: str = "qwen3.5-plus",
+    api_key: str | None = None,
+    base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    **kwargs,
+) -> "OpenAICompatibleCritic":
+    """Create an OpenAI-compatible final-answer critic."""
+    from audio_agent.critic.openai_compatible_critic import OpenAICompatibleCritic
+
+    return OpenAICompatibleCritic(
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
         **kwargs,
     )

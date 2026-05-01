@@ -22,10 +22,10 @@ START
   -> parallel_initial_tools_node (runs independent planned_tool_calls concurrently, fuses evidence)
   -> planner_decision_node (LLM decides action; on last step forces ANSWER)
   -> [conditional routing based on decision]
-     - ANSWER -> final_answer_node (frontend omni model generates answer from audio + context)
-       -> format_check_node (mandatory format validation) -> [conditional]
-        * Format OK -> answer_node -> END
-        * Format Failed -> planner_decision_node (loop with critique as evidence)
+    - ANSWER -> evidence_summarization_node -> final_answer_node (frontend omni model generates answer from audio + context)
+ -> critic_node (format, image, audio edit, and memory validation; failed results include `reject_reason`) -> [conditional]
+       * Critic OK -> answer_node -> END
+       * Critic Failed -> planner_decision_node (loop with critique as evidence)
      - CALL_TOOL -> tool_executor_node (auto-injects audio_path)
        -> evidence_fusion_node -> planner_decision_node (loop)
      - CLARIFY -> intent_clarification_node -> planner_decision_node
@@ -41,9 +41,9 @@ START
 - **Tool Execution**: Tool executor automatically resolves `audio_id` and `image_id` references to actual paths and injects media paths for tools that need them
 - **Intent Clarification**: When planner returns CLARIFY action, the intent_clarification_node refines the question before continuing
 - **Frontend Final Answer**: When the planner returns ANSWER (or is forced on the final step), the `final_answer_node` invokes the frontend (audio-capable) model with all original audio files and accumulated context to generate the final answer.
-- **Format Checking**: Mandatory format validation occurs before final answer. The planner (text LLM) checks if the proposed answer follows the expected output format. If format violations are found, the critique is added as evidence and planning continues.
+- **Final Answer Critic**: A dedicated critic validates the final answer before it is accepted. It preserves format checking and can call `image_qa`, `kw_verify`, and `external_memory_retrieve` to detect contradictions with images, unsupported transcript edits, and conflicts with historical memory. It rejects on format or keyword-verification failure, and otherwise rejects only when both image and history checks fail. If violations are found, the reject reason is added as evidence and planning continues.
 - **Final Step**: On the last step (`step_count >= max_steps - 1`), the planner decision node forces `action=ANSWER` with `draft_answer=None`, delegating final answer generation to the frontend model.
-- **Evidence Accumulation**: Frontend output, tool results, and format check critiques are fused into evidence_log for planner context
+- **Evidence Accumulation**: Frontend output, tool results, and critic critiques are fused into evidence_log for planner context
 
 ## Technology Stack
 
@@ -117,6 +117,10 @@ audio_agent/
 │   ├── dummy_planner.py      # Mock implementation for testing
 │   ├── qwen25_planner.py     # Qwen2.5 planner adapter
 │   └── openai_compatible_planner.py  # OpenAI-compatible API planner
+├── critic/                    # Final answer critic implementations
+│   ├── base.py               # BaseCritic ABC
+│   ├── dummy_critic.py       # Mock critic for testing
+│   └── openai_compatible_critic.py  # OpenAI-compatible API critic
 ├── tools/                     # Tool system
 │   ├── base.py               # BaseTool ABC
 │   ├── registry.py           # ToolRegistry for tool management (internal + MCP)
@@ -149,6 +153,7 @@ audio_agent/
 │   ├── frontend_user.md             # Frontend user instruction template
 │   ├── frontend_final_answer_system.md  # Frontend final answer system prompt
 │   ├── frontend_final_answer_user.md    # Frontend final answer user instruction
+│   ├── critic_system.md       # Critic: final answer validation instructions
 │   ├── plan_system.md               # Planner: initial planning system prompt
 │   ├── plan_user.md                 # Planner: initial planning user instruction
 │   ├── decide_system.md             # Planner: decision system prompt
@@ -160,8 +165,8 @@ audio_agent/
 │   ├── clarify_user.md              # Planner: intent clarification user instruction
 │   ├── verification_system.md       # Verification: system prompt for answer review (legacy)
 │   ├── verification_user.md         # Verification: user instruction template (legacy)
-│   ├── format_check_system.md       # Format check: system prompt for format validation
-│   ├── format_check_user.md         # Format check: user instruction template
+│   ├── format_check_system.md       # Legacy format check system prompt
+│   ├── format_check_user.md         # Legacy format check user instruction
 │   ├── evidence_summary_system.md   # Evidence summarization system prompt
 │   ├── evidence_summary_user.md     # Evidence summarization user instruction
 │   └── task_skills.yaml             # Task skill reference for initial planning
@@ -306,6 +311,7 @@ MCP tools require pre-created isolated environments. Each tool has its own `setu
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # 2. Setup individual tools
+cd audio_agent/tools/catalog/external_memory && ./setup.sh && cd -
 cd audio_agent/tools/catalog/asr_qwen3 && ./setup.sh && cd -
 cd audio_agent/tools/catalog/qwen3_asr_flash && ./setup.sh && cd -
 cd audio_agent/tools/catalog/diarizen && ./setup.sh && cd -
@@ -599,7 +605,7 @@ When you modify code in these locations, update the corresponding documentation:
 5. **Update logging module** in `audio_agent/log/` if the node produces results that should be logged:
    - Add formatter function in `formatter.py` (e.g., `format_<node_name>_result()`)
    - Update `logger.py` to include the new section in `_build_markdown()`
-   - See existing examples: `format_frontend_final_answer()`, `format_format_check_result()`
+ - See existing examples: `format_frontend_final_answer()`, `format_critic_result()`
 
 ### Customizing Prompts
 
@@ -613,6 +619,7 @@ All prompts are externalized as markdown files in `audio_agent/prompts/`. This a
 | `frontend_user.md` | Frontend user instruction | `{question}`, `{audio_paths}` |
 | `frontend_final_answer_system.md` | Frontend final answer system prompt | None |
 | `frontend_final_answer_user.md` | Frontend final answer user instruction | `{question}`, `{expected_output_format}`, `{initial_plan_text}`, `{evidence_text}`, `{planner_trace_text}`, `{tool_history_text}`, `{audio_summary}`, `{format_critique_section}` |
+| `critic_system.md` | Critic final answer validation instructions | JSON payload with `task` and check-specific fields |
 | `plan_system.md` | Planner initial planning system prompt | None |
 | `plan_user.md` | Planner initial planning user instruction | `{question}` |
 | `decide_system.md` | Planner decision system prompt | None |
@@ -624,8 +631,8 @@ All prompts are externalized as markdown files in `audio_agent/prompts/`. This a
 | `clarify_user.md` | Planner clarify user instruction | `{question}`, `{clarified_intent}`, `{expected_format}`, `{evidence_text}` |
 | `verification_system.md` | Verification: system prompt for answer review | None |
 | `verification_user.md` | Verification: user instruction template | `{question}`, `{proposed_answer}` |
-| `format_check_system.md` | Format check: system prompt for format validation | None |
-| `format_check_user.md` | Format check: user instruction template | `{question}`, `{expected_format}`, `{proposed_answer}` |
+| `format_check_system.md` | Legacy format check: system prompt for format validation | None |
+| `format_check_user.md` | Legacy format check: user instruction template | `{question}`, `{expected_format}`, `{proposed_answer}` |
 | `evidence_summary_system.md` | Evidence summarization system prompt | None |
 | `evidence_summary_user.md` | Evidence summarization user instruction | `{question}`, `{frontend_caption}`, `{evidence_text}`, `{planner_trace_text}`, `{tool_history_text}`, `{clarified_intent}`, `{expected_output_format}` |
 | `task_skills.yaml` | Task skill reference for initial planning | Rendered as markdown cookbook with slot contracts and suggested concrete tools |
@@ -838,13 +845,14 @@ validate_state_has_fields(
     - `tool_call_history` - record of all tool invocations
     - `initial_plan`, `clarified_intent`, `expected_output_format`
     - `audio_list` and `image_list`
-    - `format_critique` - if a previous format check failed
+    - `critic_critique` / `format_critique` - if a previous critic pass failed
 
-12. **Format Checking**: Mandatory format validation occurs before final answer. The planner (text LLM) checks if the proposed answer follows the expected output format (from `initial_plan.expected_output_format`). This is different from answer generation:
-    - Format check validates structure/format compliance only, NOT content correctness
-    - Format check uses the text LLM (planner), not the audio model
-    - If format violations are found, the critique is added as evidence and planning continues
-    Configure via `AgentConfig(enable_format_check=True, max_format_checks=2)`.
+12. **Final Answer Critic**: Mandatory critic validation occurs before final answer acceptance. The critic validates output format and can call tools:
+    - `image_qa` checks whether the final answer contradicts provided images
+    - `kw_verify` checks each meaningful transcript edit against the speech audio
+    - `external_memory_retrieve` supplies historical transcript memory for semantic consistency checks
+    - Final rejection rules: reject if format or keyword verification fails; otherwise reject only when both image and history checks fail
+    - If violations are found, the reject reason is added as evidence and planning continues
 
 13. **AgentConfig Fields**: Some fields (`planner_name`, `frontend_name`, `fail_on_tool_error`) exist in config but are not fully wired into orchestration logic yet.
 
@@ -858,7 +866,7 @@ validate_state_has_fields(
     - Complete AgentState with all evidence, tool calls, and planner decisions
     - Frontend output and initial plan
     - Final answer with output audio information
-    - Format check results and critiques
+    - Critic results and critiques
     - All errors and metadata
     Configure via `AgentConfig(log_dir="./logs", enable_run_logging=True)`.
 
@@ -881,5 +889,6 @@ validate_state_has_fields(
 8. `audio_agent/frontend/base.py` and `model_frontend.py` - Frontend patterns
 9. `audio_agent/frontend/openai_compatible_frontend.py` - API frontend implementation
 10. `audio_agent/planner/base.py` and `openai_compatible_planner.py` - Planner interface
-11. `audio_agent/prompts/` - Markdown prompt files
-12. `audio_agent/tests/test_graph_smoke.py` - Usage examples
+11. `audio_agent/critic/base.py` and `openai_compatible_critic.py` - Critic interface
+12. `audio_agent/prompts/` - Markdown prompt files
+13. `audio_agent/tests/test_graph_smoke.py` - Usage examples

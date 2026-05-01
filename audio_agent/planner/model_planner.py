@@ -183,6 +183,10 @@ class BaseModelPlanner(BasePlanner):
         tool_history = state.get("tool_call_history", [])
         audio_list = state.get("audio_list", [])
         image_list = state.get("image_list", [])
+        critic_result = state.get("critic_result")
+        critic_reject_reason = None
+        if critic_result and not critic_result.passed:
+            critic_reject_reason = critic_result.reject_reason or critic_result.critique
 
         evidence_summary = [
             {
@@ -243,6 +247,7 @@ class BaseModelPlanner(BasePlanner):
             "initial_plan": initial_plan.model_dump(mode="json"),
             "evidence_log": evidence_summary,
             "tool_call_history": tool_history_summary,
+            "critic_reject_reason": critic_reject_reason,
             "audio_list": "\n".join(audio_summary) if audio_summary else "- audio_0: original input audio (source: original)",
             "image_list": "\n".join(image_summary) if image_summary else "No reference images provided.",
             "available_tools": tool_summary,

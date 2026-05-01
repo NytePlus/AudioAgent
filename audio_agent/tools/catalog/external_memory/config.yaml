@@ -5,7 +5,7 @@ author: "Audio Agent Team"
 tags: ["memory", "retrieval", "history", "dummy"]
 
 server:
-  command: ["python", "server.py"]
+  command: [".venv/bin/python", "server.py"]
   working_dir: "."
   env: {}
   resources:

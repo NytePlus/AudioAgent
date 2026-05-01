@@ -136,13 +136,24 @@ class ImageQAServer:
             max_tokens=self._max_tokens,
         )
         result = model.answer_question(image_path=image_path, question=question)
-        result_text = (
-            f"Image QA model: {result.model}\n"
-            f"Image: {result.image_path}\n"
-            f"Question: {result.question}\n\n"
-            f"{result.answer}"
+        payload = {
+            "passed": result.passed,
+            "reason": result.reason,
+            "answer": result.answer,
+            "model": result.model,
+            "image_path": result.image_path,
+            "question": result.question,
+            "raw": result.parsed_data,
+        }
+        result_text = json.dumps(
+            payload,
+            ensure_ascii=False,
         )
-        return {"content": [{"type": "text", "text": result_text}], "isError": False}
+        return {
+            "content": [{"type": "text", "text": result_text}],
+            "isError": False,
+            **payload,
+        }
 
     @staticmethod
     def _error_response(request_id: Any, code: int, message: str) -> dict[str, Any]:

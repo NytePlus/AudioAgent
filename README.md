@@ -23,9 +23,9 @@ START
   -> [conditional routing based on decision]
      - ANSWER -> evidence_summarization_node (neutral summary of all evidence)
        -> final_answer_node (frontend model generates answer from audio + context)
-       -> format_check_node (mandatory validation)
-         * Format OK -> answer_node -> END
-         * Format Failed -> planner_decision_node (loop with critique as evidence)
+      -> critic_node (format, image, audio edit, and memory validation; failed results include `reject_reason`)
+        * Critic OK -> answer_node -> END
+        * Critic Failed -> planner_decision_node (loop with critique as evidence)
      - CALL_TOOL -> tool_executor_node (auto-injects audio_path)
        -> evidence_fusion_node -> planner_decision_node (loop)
      - CLARIFY_INTENT -> intent_clarification_node -> planner_decision_node (loop)
@@ -38,7 +38,7 @@ START
 - **Parallel Initial Tools**: `parallel_initial_tools_node` executes `InitialPlan.planned_tool_calls` concurrently, appends tool history, fuses all tool results into `evidence_log`, and then hands control to the normal planner decision loop.
 - **Evidence Summarization**: Before final answer, a text-LLM compresses all evidence, planner trace, and tool history into a single neutral narrative. This prevents the frontend model from being overwhelmed by verbose raw tool outputs.
 - **Frontend Final Answer**: The frontend (audio-capable) model generates the final answer directly from the original audio(s) and summarized context, rather than the text planner producing the answer.
-- **Format Checking**: Mandatory format validation occurs before finalizing. If the format is wrong, a critique is added as evidence and planning continues.
+- **Final Answer Critic**: A dedicated critic replaces the old format-check node. It rejects on format or keyword-verification failure, and otherwise rejects only when both image and history checks fail. If the critic rejects the answer, its `reject_reason` is added as evidence and planning continues.
 - **Tool Contracts**: Low-level signal/metadata tools cannot override the frontend's semantic judgments.
 - **Image Inputs**: Optional reference images are copied into the run workspace as `image_0`, `image_1`, etc. The planner sees these IDs and image tools resolve them to paths automatically.
 
@@ -66,6 +66,10 @@ audio_agent/
 │   ├── model_planner.py   # BaseModelPlanner template
 │   ├── dummy_planner.py   # Dummy implementation
 │   └── qwen25_planner.py  # Qwen2.5 planner adapter
+├── critic/                # Final answer critic implementations
+│   ├── base.py            # BaseCritic ABC
+│   ├── dummy_critic.py    # Dummy implementation
+│   └── openai_compatible_critic.py # OpenAI-compatible API critic
 ├── tools/                 # Tool system
 │   ├── base.py            # BaseTool ABC
 │   ├── registry.py        # ToolRegistry (internal + MCP tools)
@@ -104,6 +108,7 @@ audio_agent/
 │   ├── frontend_user.md             # Frontend user instruction
 │   ├── frontend_final_answer_system.md  # Frontend final answer system prompt
 │   ├── frontend_final_answer_user.md    # Frontend final answer user instruction
+│   ├── critic_system.md                 # Final answer critic instructions
 │   ├── plan_system.md               # Planner planning system prompt
 │   ├── plan_user.md                 # Planner planning user instruction
 │   ├── decide_system.md             # Planner decision system prompt
@@ -111,8 +116,8 @@ audio_agent/
 │   ├── decide_rules.md              # Planner decision rules
 │   ├── clarify_system.md            # Planner clarify system prompt
 │   ├── clarify_user.md              # Planner clarify user instruction
-│   ├── format_check_system.md       # Format check system prompt
-│   ├── format_check_user.md         # Format check user instruction
+│   ├── format_check_system.md       # Legacy format check system prompt
+│   ├── format_check_user.md         # Legacy format check user instruction
 │   ├── evidence_summary_system.md   # Evidence summarization system prompt
 │   ├── evidence_summary_user.md     # Evidence summarization user instruction
 │   └── task_skills.yaml             # Task skill reference for initial planning
@@ -161,6 +166,7 @@ The demo uses real models (Qwen2-Audio frontend, Qwen2.5 planner) with automatic
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Setup individual tools
+cd audio_agent/tools/catalog/external_memory && ./setup.sh && cd -
 cd audio_agent/tools/catalog/asr_qwen3 && ./setup.sh && cd -
 cd audio_agent/tools/catalog/qwen3_asr_flash && ./setup.sh && cd -
 cd audio_agent/tools/catalog/diarizen && ./setup.sh && cd -
@@ -212,6 +218,9 @@ If you don't have a local GPU or prefer to use API-based models:
 # It includes external_memory, ffmpeg, image_qa, image_captioner, kw_verify,
 # librosa, omni_captioner, qwen3_asr_flash, and qwen_vl_ocr.
 ./light_setup.sh --verify
+
+# Or prepare only the final-answer critic support tools.
+./light_setup.sh --tools external_memory,image_qa,kw_verify --verify
 
 # Demo with API planner + local frontend (single audio)
 export DASHSCOPE_API_KEY="sk-xxx"
@@ -571,6 +580,7 @@ All prompts are now externalized as markdown files in `audio_agent/prompts/`. Yo
 | `frontend_user.md`                | Frontend user instruction                 | `{question}`, `{audio_path_or_uri}`                                                                                                                                      |
 | `frontend_final_answer_system.md` | Frontend final answer system prompt       | None                                                                                                                                                                     |
 | `frontend_final_answer_user.md`   | Frontend final answer user instruction    | `{question}`, `{expected_output_format}`, `{initial_plan_text}`, `{frontend_direct_text}`, `{evidence_and_history_text}`, `{audio_summary}`, `{format_critique_section}` |
+| `critic_system.md`                | Final answer critic instructions          | JSON payload with `task` and check-specific fields                                                                                                                       |
 | `plan_system.md`                  | Planner initial planning system prompt    | None                                                                                                                                                                     |
 | `plan_user.md`                    | Planner initial planning user instruction | `{question}`                                                                                                                                                             |
 | `decide_system.md`                | Planner decision system prompt            | None                                                                                                                                                                     |
@@ -578,8 +588,8 @@ All prompts are now externalized as markdown files in `audio_agent/prompts/`. Yo
 | `decide_rules.md`                 | Planner decision rules                    | None                                                                                                                                                                     |
 | `clarify_system.md`               | Planner clarify system prompt             | None                                                                                                                                                                     |
 | `clarify_user.md`                 | Planner clarify user instruction          | `{question}`, `{clarified_intent}`, `{expected_format}`, `{evidence_text}`                                                                                               |
-| `format_check_system.md`          | Format check system prompt                | None                                                                                                                                                                     |
-| `format_check_user.md`            | Format check user instruction             | `{question}`, `{expected_format}`, `{proposed_answer}`                                                                                                                   |
+| `format_check_system.md`          | Legacy format check system prompt         | None                                                                                                                                                                     |
+| `format_check_user.md`            | Legacy format check user instruction      | `{question}`, `{expected_format}`, `{proposed_answer}`                                                                                                                   |
 | `evidence_summary_system.md`      | Evidence summarization system prompt      | None                                                                                                                                                                     |
 | `evidence_summary_user.md`        | Evidence summarization user instruction   | `{question}`, `{frontend_caption}`, `{evidence_text}`, `{planner_trace_text}`, `{tool_history_text}`, `{clarified_intent}`, `{expected_output_format}`                   |
 | `task_skills.yaml`                | Task skill reference for initial planning | Rendered as markdown cookbook                                                                                                                                            |

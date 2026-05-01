@@ -24,6 +24,7 @@ NODE_EVIDENCE_FUSION = "evidence_fusion_node"
 NODE_INTENT_CLARIFICATION = "intent_clarification_node"
 NODE_FINAL_ANSWER = "final_answer_node"
 NODE_FORMAT_CHECK = "format_check_node"
+NODE_CRITIC = "critic_node"
 NODE_EVIDENCE_SUMMARIZATION = "evidence_summarization_node"
 NODE_PLANNER = NODE_PLANNER_DECISION  # Backward-compatible alias
 END = "__end__"
@@ -187,6 +188,27 @@ def route_after_format_check(state: AgentState) -> str:
         # Loop back to planner to regenerate answer with format feedback
         logger.info(f"ROUTING: format check failed (critique added) -> {NODE_PLANNER_DECISION}")
         return NODE_PLANNER_DECISION
+
+
+def route_after_critic(state: AgentState) -> str:
+    """
+    Route after critic based on the aggregated critic result.
+
+    Routes:
+    - critic passed -> answer_node
+    - critic failed -> planner_decision_node (critique added as evidence)
+    """
+    logger = get_logger()
+    critic_result = state.get("critic_result")
+    if critic_result is None:
+        raise GraphRoutingError("Cannot route after critic: critic_result is None")
+
+    if critic_result.passed:
+        logger.info(f"ROUTING: critic passed -> {NODE_ANSWER}")
+        return NODE_ANSWER
+
+    logger.info(f"ROUTING: critic failed (critique added) -> {NODE_PLANNER_DECISION}")
+    return NODE_PLANNER_DECISION
 
 
 def is_terminal_state(state: AgentState) -> bool:

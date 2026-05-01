@@ -3,7 +3,7 @@
 ## 1. Project overview
 - This repository implements an extensible audio-agent framework that runs a LangGraph loop over structured `AgentState`.
 - Main use case: answer user questions about an audio file/URI by iteratively gathering and fusing evidence.
-- Core architectural idea: inject four replaceable components (`frontend`, `planner`, `tool registry/executor`, `evidence fuser`) into a fixed graph orchestration layer.
+- Core architectural idea: inject five replaceable components (`frontend`, `planner`, `critic`, `tool registry/executor`, `evidence fuser`) into a fixed graph orchestration layer.
 - Current frontend design: question-guided captioning only (no frontend planning/final answering), with strict output contract `question_guided_caption`.
 - Optional reference images are first-class inputs: `AudioAgent.run/arun(..., image_paths=[...])` copies them into the temp workspace as `image_0`, `image_1`, etc.; planners can select image tools with `selected_image_id`.
 - Runtime flow detail: `frontend_evidence_node -> initial_plan_node -> parallel_initial_tools_node -> planner_decision_node`; independent `InitialPlan.planned_tool_calls` run concurrently once, then the graph enters the iterative planner loop (`tool_executor_node -> evidence_fusion_node -> planner_decision_node`) or final-answer/failure routes.
@@ -14,6 +14,7 @@
 - `audio_agent/graph/`: LangGraph assembly + node logic + routing (`builder.py`, `nodes.py`, `routing.py`); classification `core`.
 - `audio_agent/frontend/`: frontend interface/template (`base.py`, `model_frontend.py`), dummy frontend (`dummy_frontend.py`), Qwen2-Audio adapter (`qwen2_audio_frontend.py`), Qwen3-Omni adapter (`qwen3_omni_frontend.py`); classification `core`.
 - `audio_agent/planner/`: planner interface (`base.py`), model planner template (`model_planner.py`), dummy planner (`dummy_planner.py`), Qwen2.5 adapter (`qwen25_planner.py`); classification `core`.
+- `audio_agent/critic/`: final-answer critic interface and implementations (`base.py`, `dummy_critic.py`, `openai_compatible_critic.py`) for format, image, audio edit, and memory validation; classification `core`.
 - `audio_agent/tools/`: tool interface (`base.py`), registry (`registry.py`), executor (`executor.py`), dummy tools (`dummy_tools.py`), plus MCP infrastructure (`mcp/`) and tool catalog (`catalog/` with tools: asr_qwen3, diarizen, external_memory, ffmpeg, image_captioner, image_qa, kw_verify, librosa, omni_captioner, qwen_vl_ocr, snakers4_silero-vad); classification `core`.
 - `audio_agent/fusion/`: evidence fusion interface + default fuser; classification `core`.
 - `audio_agent/config/`: `AgentConfig` schema; classification `config`.
@@ -40,7 +41,7 @@
 ## 4. Important modules and file responsibilities
 
 ### Core contracts and state
-- `audio_agent/core/schemas.py`: defines Pydantic contracts; notable schemas include `FrontendOutput(question_guided_caption, timestamp)`, `AudioItem`, `ImageItem`, `InitialPlan(approach, focus_points, detailed_plan, planned_tool_calls)`, `ExecutionStep(step_number, description, tool_type, expected_output)`, `PlannedToolCall(step_number, tool_name, tool_args, audio_id/image_id, rationale)`, and format/final-answer schemas with strict validation (`extra=forbid`).
+- `audio_agent/core/schemas.py`: defines Pydantic contracts; notable schemas include `FrontendOutput(question_guided_caption, timestamp)`, `AudioItem`, `ImageItem`, `InitialPlan(approach, focus_points, detailed_plan, planned_tool_calls)`, `ExecutionStep(step_number, description, tool_type, expected_output)`, `PlannedToolCall(step_number, tool_name, tool_args, audio_id/image_id, rationale)`, `CriticResult(passed, reject_reason, checks)`, and format/final-answer schemas with strict validation (`extra=forbid`).
 - `audio_agent/core/state.py`: defines `AgentState` schema and `create_initial_state(...)`, including `audio_list` and `image_list`.
 - `audio_agent/core/errors.py`: exception taxonomy (`FrontendError`, `PlannerError`, etc.).
 - `audio_agent/core/constants.py`: `AgentStatus` enum and defaults.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Setup script for Keyword Verify tool (API-based).
+# Setup script for External Memory tool.
 
 set -euo pipefail
 
@@ -84,10 +84,10 @@ fi
 echo "Creating virtual environment..."
 "$UV_BIN" venv --python "$PYTHON_BIN"
 
-echo "Installing Keyword Verify package..."
+echo "Installing External Memory package..."
 "$UV_BIN" pip install --python .venv/bin/python -e .
 
 echo ""
 echo "Setup complete!"
 echo "Python version: $(.venv/bin/python --version)"
-echo "Set DASHSCOPE_API_KEY before calling the kw_verify tool."
+echo "Set EXTERNAL_MEMORY_TEXT or EXTERNAL_MEMORY_PATH to provide memory content."

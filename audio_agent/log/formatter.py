@@ -520,6 +520,108 @@ def format_format_check_result(format_check_result: Any) -> str:
     return "\n".join(lines)
 
 
+def format_critic_result(critic_result: Any) -> str:
+    """Format final-answer critic result as Markdown."""
+    if not critic_result:
+        return "## Critic Result\n\n*No critic check performed*\n\n"
+
+    import json
+
+    lines = ["## Critic Result", ""]
+    passed = getattr(critic_result, "passed", False)
+    critique = getattr(critic_result, "critique", None)
+    reject_reason = getattr(critic_result, "reject_reason", None)
+    confidence = getattr(critic_result, "confidence", 0.0)
+    lines.append(f"- **Status**: {'Passed' if passed else 'Failed'}")
+    lines.append(f"- **Confidence**: {confidence:.2f}")
+    if reject_reason:
+        escaped_reject_reason = str(reject_reason).replace("|", "\\|")
+        lines.append(f"- **Reject Reason**: {escaped_reject_reason}")
+
+    checks = getattr(critic_result, "checks", [])
+    if checks:
+        lines.append("")
+        lines.append("### Checks")
+        lines.append("")
+        lines.append("| Check | Status | Confidence | Critique |")
+        lines.append("|-------|--------|------------|----------|")
+        for check in checks:
+            name = str(getattr(check, "name", "unknown")).replace("|", "\\|")
+            check_passed = "Passed" if getattr(check, "passed", False) else "Failed"
+            check_confidence = getattr(check, "confidence", 0.0)
+            check_reason = (
+                getattr(check, "reject_reason", None)
+                or getattr(check, "critique", None)
+                or getattr(check, "metadata", {}).get("reason", "-")
+            )
+            check_critique = str(check_reason or "-").replace("|", "\\|")
+            lines.append(f"| {name} | {check_passed} | {check_confidence:.2f} | {check_critique[:120]} |")
+
+        tool_checks = [
+            check
+            for check in checks
+            if getattr(check, "name", None) in {"kw_verify", "image_qa", "history"}
+        ]
+        if tool_checks:
+            lines.append("")
+            lines.append("### Tool Return Results")
+            lines.append("")
+            for check in tool_checks:
+                name = getattr(check, "name", "unknown")
+                metadata = getattr(check, "metadata", {})
+                reason = (
+                    getattr(check, "reject_reason", None)
+                    or getattr(check, "critique", None)
+                    or metadata.get("reason")
+                    or "No rejection from this tool."
+                )
+                lines.append(f"#### {name}")
+                lines.append("")
+                lines.append(f"- **Passed**: {getattr(check, 'passed', False)}")
+                lines.append(f"- **Confidence**: {getattr(check, 'confidence', 0.0):.2f}")
+                lines.append(f"- **Reason**: {reason}")
+                lines.append("")
+                lines.append("```json")
+                try:
+                    metadata_text = json.dumps(metadata, indent=2, ensure_ascii=False, default=str)
+                except Exception:
+                    metadata_text = str(metadata)
+                if len(metadata_text) > 4000:
+                    metadata_text = metadata_text[:4000] + "\n... (truncated)"
+                lines.append(metadata_text)
+                lines.append("```")
+                lines.append("")
+
+    edits = getattr(critic_result, "transcript_edits", [])
+    if edits:
+        lines.append("")
+        lines.append("### Transcript Edits")
+        lines.append("")
+        lines.append("| Original | Revised | Rationale |")
+        lines.append("|----------|---------|-----------|")
+        for edit in edits:
+            original = str(getattr(edit, "original_text", "")).replace("|", "\\|")[:120]
+            revised = str(getattr(edit, "revised_text", "")).replace("|", "\\|")[:120]
+            rationale = str(getattr(edit, "rationale", "") or "-").replace("|", "\\|")[:120]
+            lines.append(f"| {original} | {revised} | {rationale} |")
+
+    if reject_reason:
+        lines.append("")
+        lines.append("**Reject Reason**:")
+        lines.append("```")
+        lines.append(str(reject_reason))
+        lines.append("```")
+    elif critique:
+        lines.append("")
+        lines.append("**Critique**:")
+        lines.append("```")
+        lines.append(str(critique))
+        lines.append("```")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
 def format_error(error_message: str | None) -> str:
     """Format error section as Markdown."""
     lines = ["## Errors", ""]

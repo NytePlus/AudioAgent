@@ -387,6 +387,87 @@ class FormatCheckResult(BaseModel):
 
 
 # =============================================================================
+# Critic Schemas
+# =============================================================================
+
+class TranscriptEdit(BaseModel):
+    """A single transcript correction from the initial transcript to the final answer."""
+
+    original_text: str = Field(..., description="Original text span before correction")
+    revised_text: str = Field(..., description="Revised text span in the final answer")
+    rationale: str | None = Field(default=None, description="Why this edit was identified")
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def validate_edit(self) -> "TranscriptEdit":
+        """Fail-fast validation for transcript edits."""
+        if not self.original_text.strip():
+            raise ValueError("TranscriptEdit.original_text must be non-empty")
+        if not self.revised_text.strip():
+            raise ValueError("TranscriptEdit.revised_text must be non-empty")
+        if self.rationale is not None and not self.rationale.strip():
+            raise ValueError("TranscriptEdit.rationale cannot be empty when provided")
+        return self
+
+
+class CriticCheckResult(BaseModel):
+    """Result of one critic check."""
+
+    name: str = Field(..., description="Check name, e.g. format or kw_verify")
+    passed: bool = Field(..., description="Whether this check passed")
+    critique: str | None = Field(default=None, description="Failure or warning details")
+    reject_reason: str | None = Field(
+        default=None,
+        description="Reason this check rejects the final answer, if it is a rejecting check",
+    )
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    timestamp: datetime = Field(default_factory=datetime.now)
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def validate_check(self) -> "CriticCheckResult":
+        """Fail-fast validation for critic checks."""
+        if not self.name.strip():
+            raise ValueError("CriticCheckResult.name must be non-empty")
+        if self.reject_reason is None and self.critique:
+            self.reject_reason = self.critique
+        if self.critique is None and self.reject_reason:
+            self.critique = self.reject_reason
+        return self
+
+
+class CriticResult(BaseModel):
+    """Aggregated result from the final-answer critic."""
+
+    passed: bool = Field(..., description="True if all mandatory critic checks passed")
+    critique: str | None = Field(default=None, description="Combined critique when failed")
+    reject_reason: str | None = Field(
+        default=None,
+        description="Actionable reason the critic rejected the final answer when failed",
+    )
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    checks: list[CriticCheckResult] = Field(default_factory=list)
+    transcript_edits: list[TranscriptEdit] = Field(default_factory=list)
+    timestamp: datetime = Field(default_factory=datetime.now)
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def validate_result(self) -> "CriticResult":
+        """Ensure failed critic results explain what failed."""
+        if self.reject_reason is None and self.critique:
+            self.reject_reason = self.critique
+        if self.critique is None and self.reject_reason:
+            self.critique = self.reject_reason
+        if not self.passed and not (self.reject_reason and self.reject_reason.strip()):
+            raise ValueError("CriticResult.reject_reason is required when passed is false")
+        return self
+
+
+# =============================================================================
 # Audio Output Schema
 # =============================================================================
 
