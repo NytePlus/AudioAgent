@@ -41,7 +41,7 @@ START
 - **Tool Execution**: Tool executor automatically resolves `audio_id` and `image_id` references to actual paths and injects media paths for tools that need them
 - **Intent Clarification**: When planner returns CLARIFY action, the intent_clarification_node refines the question before continuing
 - **Frontend Final Answer**: When the planner returns ANSWER (or is forced on the final step), the `final_answer_node` invokes the frontend (audio-capable) model with all original audio files and accumulated context to generate the final answer.
-- **Final Answer Critic**: A dedicated critic validates the final answer before it is accepted. It preserves format checking and can call `image_qa`, `kw_verify`, and `external_memory_retrieve` to detect contradictions with images, unsupported transcript edits, and conflicts with historical memory. It rejects on format or keyword-verification failure, and otherwise rejects only when both image and history checks fail. If violations are found, the reject reason is added as evidence and planning continues.
+- **Final Answer Critic**: A dedicated critic validates the final answer before it is accepted. It runs local JSON/regex format validation, acoustic edit verification, image contradiction, and history consistency checks concurrently. It preserves format checking and can call `image_qa`, `kw_verify`, and `external_memory_retrieve` to detect contradictions with images, unsupported transcript edits, and conflicts with historical memory. It rejects on format or keyword-verification failure, and otherwise rejects only when both image and history checks fail. If violations are found, the reject reason is added as evidence and planning continues.
 - **Final Step**: On the last step (`step_count >= max_steps - 1`), the planner decision node forces `action=ANSWER` with `draft_answer=None`, delegating final answer generation to the frontend model.
 - **Evidence Accumulation**: Frontend output, tool results, and critic critiques are fused into evidence_log for planner context
 
@@ -153,7 +153,7 @@ audio_agent/
 │   ├── frontend_user.md             # Frontend user instruction template
 │   ├── frontend_final_answer_system.md  # Frontend final answer system prompt
 │   ├── frontend_final_answer_user.md    # Frontend final answer user instruction
-│   ├── critic_system.md       # Critic: final answer validation instructions
+│   ├── critic_history_check_system.md   # Critic: history consistency instructions
 │   ├── plan_system.md               # Planner: initial planning system prompt
 │   ├── plan_user.md                 # Planner: initial planning user instruction
 │   ├── decide_system.md             # Planner: decision system prompt
@@ -619,7 +619,7 @@ All prompts are externalized as markdown files in `audio_agent/prompts/`. This a
 | `frontend_user.md` | Frontend user instruction | `{question}`, `{audio_paths}` |
 | `frontend_final_answer_system.md` | Frontend final answer system prompt | None |
 | `frontend_final_answer_user.md` | Frontend final answer user instruction | `{question}`, `{expected_output_format}`, `{initial_plan_text}`, `{evidence_text}`, `{planner_trace_text}`, `{tool_history_text}`, `{audio_summary}`, `{format_critique_section}` |
-| `critic_system.md` | Critic final answer validation instructions | JSON payload with `task` and check-specific fields |
+| `critic_history_check_system.md` | Critic history consistency instructions | JSON payload with `task="history_check"` and final answer/history fields |
 | `plan_system.md` | Planner initial planning system prompt | None |
 | `plan_user.md` | Planner initial planning user instruction | `{question}` |
 | `decide_system.md` | Planner decision system prompt | None |
@@ -851,6 +851,7 @@ validate_state_has_fields(
     - `image_qa` checks whether the final answer contradicts provided images
     - `kw_verify` checks each meaningful transcript edit against the speech audio
     - `external_memory_retrieve` supplies historical transcript memory for semantic consistency checks
+    - Format, acoustic, image, and history checks run concurrently; tool logs are emitted by the normal tool executor and may interleave
     - Final rejection rules: reject if format or keyword verification fails; otherwise reject only when both image and history checks fail
     - If violations are found, the reject reason is added as evidence and planning continues
 

@@ -1280,6 +1280,7 @@ def create_final_answer_node(frontend: BaseFrontend):
         log_node_end("final_answer_node", {
             "answer_length": len(answer_text),
         })
+        print(f"[Answer] {answer_text}", flush=True)
 
         return {
             "current_decision": updated_decision,

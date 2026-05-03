@@ -38,7 +38,7 @@ START
 - **Parallel Initial Tools**: `parallel_initial_tools_node` executes `InitialPlan.planned_tool_calls` concurrently, appends tool history, fuses all tool results into `evidence_log`, and then hands control to the normal planner decision loop.
 - **Evidence Summarization**: Before final answer, a text-LLM compresses all evidence, planner trace, and tool history into a single neutral narrative. This prevents the frontend model from being overwhelmed by verbose raw tool outputs.
 - **Frontend Final Answer**: The frontend (audio-capable) model generates the final answer directly from the original audio(s) and summarized context, rather than the text planner producing the answer.
-- **Final Answer Critic**: A dedicated critic replaces the old format-check node. It rejects on format or keyword-verification failure, and otherwise rejects only when both image and history checks fail. If the critic rejects the answer, its `reject_reason` is added as evidence and planning continues.
+- **Final Answer Critic**: A dedicated critic replaces the old format-check node. It runs local JSON/regex format validation, acoustic edit verification, image contradiction, and history consistency checks concurrently. It rejects on format or keyword-verification failure, and otherwise rejects only when both image and history checks fail. If the critic rejects the answer, its `reject_reason` is added as evidence and planning continues.
 - **Tool Contracts**: Low-level signal/metadata tools cannot override the frontend's semantic judgments.
 - **Image Inputs**: Optional reference images are copied into the run workspace as `image_0`, `image_1`, etc. The planner sees these IDs and image tools resolve them to paths automatically.
 
@@ -108,7 +108,7 @@ audio_agent/
 │   ├── frontend_user.md             # Frontend user instruction
 │   ├── frontend_final_answer_system.md  # Frontend final answer system prompt
 │   ├── frontend_final_answer_user.md    # Frontend final answer user instruction
-│   ├── critic_system.md                 # Final answer critic instructions
+│   ├── critic_history_check_system.md   # Critic history consistency instructions
 │   ├── plan_system.md               # Planner planning system prompt
 │   ├── plan_user.md                 # Planner planning user instruction
 │   ├── decide_system.md             # Planner decision system prompt
@@ -580,7 +580,7 @@ All prompts are now externalized as markdown files in `audio_agent/prompts/`. Yo
 | `frontend_user.md`                | Frontend user instruction                 | `{question}`, `{audio_path_or_uri}`                                                                                                                                      |
 | `frontend_final_answer_system.md` | Frontend final answer system prompt       | None                                                                                                                                                                     |
 | `frontend_final_answer_user.md`   | Frontend final answer user instruction    | `{question}`, `{expected_output_format}`, `{initial_plan_text}`, `{frontend_direct_text}`, `{evidence_and_history_text}`, `{audio_summary}`, `{format_critique_section}` |
-| `critic_system.md`                | Final answer critic instructions          | JSON payload with `task` and check-specific fields                                                                                                                       |
+| `critic_history_check_system.md`  | Critic history consistency instructions   | JSON payload with `task="history_check"` and final answer/history fields                                                                                                 |
 | `plan_system.md`                  | Planner initial planning system prompt    | None                                                                                                                                                                     |
 | `plan_user.md`                    | Planner initial planning user instruction | `{question}`                                                                                                                                                             |
 | `decide_system.md`                | Planner decision system prompt            | None                                                                                                                                                                     |

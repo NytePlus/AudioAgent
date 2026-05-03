@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import re
+import unicodedata
 from typing import Any
 
 from audio_agent.critic.base import BaseCritic
 from audio_agent.core.errors import CriticError
-from audio_agent.core.logging import log_info
 from audio_agent.core.schemas import (
     CriticCheckResult,
     CriticResult,
@@ -59,38 +61,47 @@ class OpenAICompatibleCritic(BaseCritic):
         if not proposed_answer:
             raise CriticError("Critic requires current_decision.draft_answer")
 
-        final_transcript = extract_transcript_text(proposed_answer) or proposed_answer
+        final_transcript = extract_transcript_text(proposed_answer) or ""
         initial_transcript = state.get("initial_transcript")
-        checks: list[CriticCheckResult] = []
 
-        format_check = self._check_format(state, proposed_answer)
-        checks.append(format_check)
-
-        edits = self._extract_edits(initial_transcript, final_transcript)
-        kw_check = await self._run_kw_verify_check(
-            edits=edits,
-            state=state,
-            executor=executor,
-            registry=registry,
+        format_task = asyncio.create_task(
+            self._run_format_check(state=state, proposed_answer=proposed_answer)
         )
-        checks.append(kw_check)
-
-        image_check = await self._run_image_check(
-            final_answer=proposed_answer,
-            state=state,
-            executor=executor,
-            registry=registry,
+        acoustic_task = asyncio.create_task(
+            self._run_acoustic_check(
+                initial_transcript=initial_transcript,
+                final_transcript=final_transcript,
+                state=state,
+                executor=executor,
+                registry=registry,
+            )
         )
-        checks.append(image_check)
-
-        history_check = await self._run_history_check(
-            final_transcript=final_transcript,
-            final_answer=proposed_answer,
-            state=state,
-            executor=executor,
-            registry=registry,
+        image_task = asyncio.create_task(
+            self._run_image_check(
+                final_answer=proposed_answer,
+                state=state,
+                executor=executor,
+                registry=registry,
+            )
         )
-        checks.append(history_check)
+        history_task = asyncio.create_task(
+            self._run_history_check(
+                final_transcript=final_transcript,
+                final_answer=proposed_answer,
+                state=state,
+                executor=executor,
+                registry=registry,
+            )
+        )
+
+        format_check, acoustic_result, image_check, history_check = await asyncio.gather(
+            format_task,
+            acoustic_task,
+            image_task,
+            history_task,
+        )
+        edits, kw_check = acoustic_result
+        checks = [format_check, kw_check, image_check, history_check]
 
         passed = self._passes_critic_rules(
             format_check=format_check,
@@ -172,28 +183,74 @@ class OpenAICompatibleCritic(BaseCritic):
             raise CriticError("Critic JSON output must be an object")
         return parsed
 
+    async def _run_format_check(
+        self,
+        *,
+        state: AgentState,
+        proposed_answer: str,
+    ) -> CriticCheckResult:
+        return self._check_format(state, proposed_answer)
+
+    async def _run_acoustic_check(
+        self,
+        *,
+        initial_transcript: str | None,
+        final_transcript: str,
+        state: AgentState,
+        executor: ToolExecutor,
+        registry: ToolRegistry,
+    ) -> tuple[list[TranscriptEdit], CriticCheckResult]:
+        edits = await asyncio.to_thread(
+            self._extract_edits,
+            initial_transcript,
+            final_transcript,
+        )
+        kw_check = await self._run_kw_verify_check(
+            edits=edits,
+            state=state,
+            executor=executor,
+            registry=registry,
+        )
+        return edits, kw_check
+
     def _check_format(self, state: AgentState, proposed_answer: str) -> CriticCheckResult:
-        initial_plan = state.get("initial_plan")
-        payload = {
-            "task": "format_check",
-            "question": state.get("question", ""),
-            "expected_format": state.get("expected_output_format"),
-            "requires_audio_output": bool(initial_plan.requires_audio_output) if initial_plan else False,
-            "proposed_answer": proposed_answer,
-        }
-        data = self._call_json(load_prompt("critic_system"), payload)
-        format_data = data.get("format_check", data)
-        passed = bool(format_data.get("passed", False))
-        reject_reason = None if passed else "invalid format"
+        pattern = r'"transcription"\s*:'
+        match = re.search(pattern, proposed_answer)
+        parsed: dict[str, Any] | None = None
+        parse_error = None
+        if match:
+            try:
+                parsed = json.loads(proposed_answer)
+            except json.JSONDecodeError as exc:
+                parse_error = str(exc)
+
+        passed = (
+            isinstance(parsed, dict)
+            and "transcription" in parsed
+            and isinstance(parsed.get("transcription"), str)
+        )
+        if passed:
+            reject_reason = None
+            reason = "Format is valid."
+            confidence = 1.0
+        elif not match:
+            reject_reason = "invalid format"
+            reason = 'Final answer must be a JSON object containing a string "transcription" field.'
+            confidence = 0.0
+        else:
+            reject_reason = "invalid JSON"
+            reason = f"Final answer contained a transcription field but could not be parsed as JSON: {parse_error}"
+            confidence = 0.0
         return CriticCheckResult(
             name="format",
             passed=passed,
             critique=reject_reason,
             reject_reason=reject_reason,
-            confidence=float(format_data.get("confidence", 0.0)),
+            confidence=confidence,
             metadata={
-                "raw": format_data,
-                "reason": reject_reason or "Format is valid.",
+                "regex_matched": bool(match),
+                "parsed": parsed,
+                "reason": reason,
             },
         )
 
@@ -204,30 +261,120 @@ class OpenAICompatibleCritic(BaseCritic):
     ) -> list[TranscriptEdit]:
         if not initial_transcript or not final_transcript:
             return []
-        payload = {
-            "task": "extract_transcript_edits",
-            "initial_transcript": initial_transcript,
-            "final_transcript": final_transcript,
-        }
-        data = self._call_json(load_prompt("critic_system"), payload)
-        edits = data.get("edits", [])
-        if not isinstance(edits, list):
+        original_tokens = self._tokenize_transcript(initial_transcript)
+        revised_tokens = self._tokenize_transcript(final_transcript)
+        if not original_tokens or not revised_tokens:
             return []
-        normalized: list[TranscriptEdit] = []
-        for item in edits:
-            if not isinstance(item, dict):
-                continue
-            original = item.get("original_text") or item.get("a")
-            revised = item.get("revised_text") or item.get("b")
-            if original and revised and str(original).strip() != str(revised).strip():
-                normalized.append(
+
+        ops = self._align_tokens(original_tokens, revised_tokens)
+        edits: list[TranscriptEdit] = []
+        original_buffer: list[str] = []
+        revised_buffer: list[str] = []
+        operation_buffer: list[str] = []
+
+        def flush_edit() -> None:
+            if not operation_buffer:
+                return
+            raw_original_text = " ".join(original_buffer).strip()
+            raw_revised_text = " ".join(revised_buffer).strip()
+            original_text = raw_original_text or "<inserted>"
+            revised_text = raw_revised_text or "<deleted>"
+            if self._normalize_for_edit_compare(raw_original_text) != self._normalize_for_edit_compare(
+                raw_revised_text
+            ):
+                edits.append(
                     TranscriptEdit(
-                        original_text=str(original),
-                        revised_text=str(revised),
-                        rationale=item.get("rationale"),
+                        original_text=original_text,
+                        revised_text=revised_text,
+                        rationale=(
+                            "Detected by edit-distance alignment: "
+                            f"{', '.join(dict.fromkeys(operation_buffer))}"
+                        ),
                     )
                 )
-        return normalized
+            original_buffer.clear()
+            revised_buffer.clear()
+            operation_buffer.clear()
+
+        for operation, original_token, revised_token in ops:
+            if operation == "equal":
+                flush_edit()
+                continue
+            if original_token is not None:
+                original_buffer.append(original_token)
+            if revised_token is not None:
+                revised_buffer.append(revised_token)
+            operation_buffer.append(operation)
+        flush_edit()
+        return edits
+
+    @staticmethod
+    def _tokenize_transcript(text: str) -> list[str]:
+        return re.findall(r"\S+", text)
+
+    @staticmethod
+    def _normalize_for_edit_compare(text: str) -> str:
+        without_punctuation = "".join(
+            char for char in text if not unicodedata.category(char).startswith("P")
+        )
+        return without_punctuation.casefold()
+
+    @staticmethod
+    def _align_tokens(
+        original_tokens: list[str],
+        revised_tokens: list[str],
+    ) -> list[tuple[str, str | None, str | None]]:
+        original_count = len(original_tokens)
+        revised_count = len(revised_tokens)
+        dp = [[0] * (revised_count + 1) for _ in range(original_count + 1)]
+
+        for i in range(1, original_count + 1):
+            dp[i][0] = i
+        for j in range(1, revised_count + 1):
+            dp[0][j] = j
+
+        for i in range(1, original_count + 1):
+            for j in range(1, revised_count + 1):
+                original_token = OpenAICompatibleCritic._normalize_for_edit_compare(
+                    original_tokens[i - 1]
+                )
+                revised_token = OpenAICompatibleCritic._normalize_for_edit_compare(
+                    revised_tokens[j - 1]
+                )
+                substitution_cost = 0 if original_token == revised_token else 1
+                dp[i][j] = min(
+                    dp[i - 1][j - 1] + substitution_cost,
+                    dp[i - 1][j] + 1,
+                    dp[i][j - 1] + 1,
+                )
+
+        ops: list[tuple[str, str | None, str | None]] = []
+        i = original_count
+        j = revised_count
+        while i > 0 or j > 0:
+            if i > 0 and j > 0:
+                original_token = OpenAICompatibleCritic._normalize_for_edit_compare(
+                    original_tokens[i - 1]
+                )
+                revised_token = OpenAICompatibleCritic._normalize_for_edit_compare(
+                    revised_tokens[j - 1]
+                )
+                substitution_cost = 0 if original_token == revised_token else 1
+                if dp[i][j] == dp[i - 1][j - 1] + substitution_cost:
+                    operation = "equal" if substitution_cost == 0 else "replace"
+                    ops.append((operation, original_tokens[i - 1], revised_tokens[j - 1]))
+                    i -= 1
+                    j -= 1
+                    continue
+            if i > 0 and dp[i][j] == dp[i - 1][j] + 1:
+                ops.append(("delete", original_tokens[i - 1], None))
+                i -= 1
+                continue
+            ops.append(("insert", None, revised_tokens[j - 1]))
+            j -= 1
+
+        ops.reverse()
+        return ops
 
     @staticmethod
     def _passes_critic_rules(
@@ -259,22 +406,6 @@ class OpenAICompatibleCritic(BaseCritic):
             reasons.append(str(reason))
         return reasons
 
-    @staticmethod
-    def _log_history_check_result(check: CriticCheckResult) -> None:
-        log_info(
-            "critic_history_check",
-            {
-                "passed": check.passed,
-                "reason": (
-                    check.reject_reason
-                    or check.critique
-                    or check.metadata.get("reason")
-                    or "No history conflict."
-                ),
-                "confidence": check.confidence,
-            },
-        )
-
     async def _run_kw_verify_check(
         self,
         edits: list[TranscriptEdit],
@@ -290,6 +421,18 @@ class OpenAICompatibleCritic(BaseCritic):
                 confidence=1.0,
                 metadata={"skipped": "no transcript edits", "reason": "No transcript edits to verify."},
             )
+        verifiable_edits = [edit for edit in edits if edit.revised_text != "<deleted>"]
+        if not verifiable_edits:
+            return CriticCheckResult(
+                name="kw_verify",
+                passed=True,
+                critique=None,
+                confidence=1.0,
+                metadata={
+                    "skipped": "deletion-only transcript edits",
+                    "reason": "No revised transcript text to verify acoustically.",
+                },
+            )
         if "kw_verify" not in registry:
             return CriticCheckResult(
                 name="kw_verify",
@@ -302,7 +445,7 @@ class OpenAICompatibleCritic(BaseCritic):
         original_audios = [a for a in state.get("audio_list", []) if a.source == "original"]
         edit_results = []
         missing_words = []
-        for edit in edits:
+        for edit in verifiable_edits:
             tool_outputs = []
             passed_any = False
             confidences = []
@@ -447,7 +590,6 @@ class OpenAICompatibleCritic(BaseCritic):
                     "reason": "external_memory_retrieve is unavailable.",
                 },
             )
-            self._log_history_check_result(check)
             return check
         result = await executor.execute(
             ToolCallRequest(
@@ -468,7 +610,6 @@ class OpenAICompatibleCritic(BaseCritic):
                 confidence=0.0,
                 metadata={"tool_output": result.output, "reason": reject_reason},
             )
-            self._log_history_check_result(check)
             return check
         history = memory_text
         if isinstance(memory_payload, dict):
@@ -484,9 +625,9 @@ class OpenAICompatibleCritic(BaseCritic):
                     "reason": "History is empty.",
                 },
             )
-            self._log_history_check_result(check)
             return check
-        history_check = self._judge_history_alignment(
+        history_check = await asyncio.to_thread(
+            self._judge_history_alignment,
             question=state.get("question", ""),
             final_answer=final_answer,
             final_transcript=final_transcript,
@@ -498,7 +639,6 @@ class OpenAICompatibleCritic(BaseCritic):
                 "history": history[:2000],
             }
         )
-        self._log_history_check_result(history_check)
         return history_check
 
     @staticmethod
@@ -535,7 +675,7 @@ class OpenAICompatibleCritic(BaseCritic):
                 "Return JSON: {\"passed\": bool, \"reason\": string, \"confidence\": number}."
             ),
         }
-        data = self._call_json(load_prompt("critic_system"), payload)
+        data = self._call_json(load_prompt("critic_history_check_system"), payload)
         passed = bool(data.get("passed", False))
         reason = str(data.get("reason") or data.get("reject_reason") or data.get("critique") or "")
         reject_reason = None if passed else reason
@@ -557,35 +697,3 @@ class OpenAICompatibleCritic(BaseCritic):
             return json.loads(text)
         except json.JSONDecodeError:
             return None
-
-    def _judge_tool_text(
-        self,
-        task: str,
-        tool_text: str,
-        final_answer: str,
-        extra_context: dict[str, Any],
-    ) -> CriticCheckResult:
-        payload = {
-            "task": task,
-            "tool_evidence": tool_text,
-            "final_answer": final_answer,
-            "context": extra_context,
-            "instruction": (
-                "Return JSON: {\"passed\": bool, \"reject_reason\": string|null, "
-                "\"confidence\": number}. Use reject_reason only when passed is false."
-            ),
-        }
-        data = self._call_json(load_prompt("critic_system"), payload)
-        reject_reason = data.get("reject_reason") or data.get("critique")
-        return CriticCheckResult(
-            name=task,
-            passed=bool(data.get("passed", False)),
-            critique=reject_reason,
-            reject_reason=reject_reason,
-            confidence=float(data.get("confidence", 0.0)),
-            metadata={
-                "tool_evidence": tool_text[:2000],
-                "reject_reason": reject_reason,
-                **extra_context,
-            },
-        )
