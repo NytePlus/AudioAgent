@@ -65,3 +65,5 @@ tool_preparation/SERVER_SPECIFIC_*.md
 /audio_agent/tools/catalog/*/artifact/
 
 pred.txt
+
+.devcontainer/
