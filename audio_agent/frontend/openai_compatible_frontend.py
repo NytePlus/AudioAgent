@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +70,25 @@ class OpenAICompatibleFrontend(BaseModelFrontend):
     @property
     def input_format(self) -> FrontendInputFormat:
         return FrontendInputFormat.API_MODEL
+
+    @staticmethod
+    def _is_rate_limit_error(error: Exception) -> bool:
+        """Return True for transient provider request-limit errors."""
+        status_code = getattr(error, "status_code", None)
+        error_code = getattr(error, "code", None)
+        text = str(error).lower()
+        return (
+            status_code == 429
+            or error_code == "limit_requests"
+            or "rate limit" in text
+            or "limit_requests" in text
+            or "exceeded your current request limit" in text
+        )
+
+    @staticmethod
+    def _sleep_after_rate_limit() -> None:
+        """Short backoff for transient request-limit responses."""
+        time.sleep(1.0)
 
     def initialize_model(self) -> Any:
         """Initialize and return OpenAI client."""
@@ -234,27 +254,25 @@ class OpenAICompatibleFrontend(BaseModelFrontend):
             "modalities": ["text"],  # Text-only output (disable audio generation)
         }
 
-        # Make API call
-        try:
-            completion = client.chat.completions.create(**kwargs)
-        except Exception as e:
-            raise FrontendError(
-                f"API call failed for model {self._model}: {e}",
-                details={"model": self._model, "error_type": type(e).__name__},
-            ) from e
-
-        # Process streaming response
-        text_response = ""
-
-        try:
-            for chunk in completion:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    text_response += chunk.choices[0].delta.content
-        except Exception as e:
-            raise FrontendError(
-                f"Error processing API response: {e}",
-                details={"model": self._model},
-            ) from e
+        # DashScope can return short-lived 429 limit_requests responses during
+        # batch runs; wait briefly and retry without surfacing them as frontend
+        # failures.
+        while True:
+            try:
+                completion = client.chat.completions.create(**kwargs)
+                text_response = ""
+                for chunk in completion:
+                    if chunk.choices and chunk.choices[0].delta.content:
+                        text_response += chunk.choices[0].delta.content
+                break
+            except Exception as e:
+                if self._is_rate_limit_error(e):
+                    self._sleep_after_rate_limit()
+                    continue
+                raise FrontendError(
+                    f"API call failed for model {self._model}: {e}",
+                    details={"model": self._model, "error_type": type(e).__name__},
+                ) from e
 
         if not text_response.strip():
             raise FrontendError(
@@ -318,20 +336,25 @@ class OpenAICompatibleFrontend(BaseModelFrontend):
 
         # Make API call (non-streaming for final answer reliability)
         client = self.model_handle
-        try:
-            response = client.chat.completions.create(
-                model=self._model,
-                messages=model_input.messages,
-                temperature=self._temperature,
-                max_tokens=self._max_tokens,
-                stream=False,
-                modalities=["text"],
-            )
-        except Exception as e:
-            raise FrontendError(
-                f"API call failed for final answer: {e}",
-                details={"model": self._model, "error_type": type(e).__name__},
-            ) from e
+        while True:
+            try:
+                response = client.chat.completions.create(
+                    model=self._model,
+                    messages=model_input.messages,
+                    temperature=self._temperature,
+                    max_tokens=self._max_tokens,
+                    stream=False,
+                    modalities=["text"],
+                )
+                break
+            except Exception as e:
+                if self._is_rate_limit_error(e):
+                    self._sleep_after_rate_limit()
+                    continue
+                raise FrontendError(
+                    f"API call failed for final answer: {e}",
+                    details={"model": self._model, "error_type": type(e).__name__},
+                ) from e
 
         if not response.choices or len(response.choices) == 0:
             raise FrontendError(

@@ -17,6 +17,7 @@ from tqdm import tqdm
 
 SOURCE_PREFIX = "/aistor/sjtu/hpc_stor01/home/wangchencheng/data/slidespeech"
 TARGET_PREFIX = "/data"
+ABLATION_MODES = ("full", "frontend-only", "no-critic-no-image-tools", "no-critic")
 
 
 def print_subprocess_failure(
@@ -46,14 +47,45 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input", default="/data/dev_oracle_v1/multitask.jsonl")
     parser.add_argument("--output", default="pred.txt")
     parser.add_argument("--log-dir", default="logs/batch_api_asr")
-    parser.add_argument("--frontend-model", default="qwen3-omni-flash")
-    parser.add_argument("--planner-model", default="qwen3.5-plus")
-    parser.add_argument("--planner-api-key", default=None, help="Passed through to demo_run_api_asr --planner-api-key (planner endpoint only).")
-    parser.add_argument("--planner-base-url", default=None, help="Passed through to demo_run_api_asr --planner-base-url (planner endpoint only).",)
+    parser.add_argument(
+        "--question",
+        default=None,
+        help="Optional question passed through to demo_run_api_asr.",
+    )
+    parser.add_argument(
+        "--ablation",
+        choices=ABLATION_MODES,
+        default="full",
+        help="Ablation mode passed through to demo_run_api_asr.",
+    )
+    parser.add_argument(
+        "--image-field",
+        default="image",
+        help=(
+            "JSONL field containing per-entry image path(s). Supports a string or list. "
+            "Set empty to disable manifest image lookup."
+        ),
+    )
+    parser.add_argument(
+        "--image-file",
+        default=None,
+        help=(
+            "Optional JSONL file with per-entry image path(s). Each record can contain "
+            "key/id/utt_id plus the field named by --image-field."
+        ),
+    )
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--retries", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=0.0, help="Per-item timeout in seconds; 0 disables.")
     parser.add_argument("--max-steps", type=int, default=10)
+    parser.add_argument("--max-tokens", type=int, default=4096)
+    parser.add_argument(
+        "--frontend-max-tokens",
+        dest="frontend_max_tokens",
+        type=int,
+        default=None,
+        help="Frontend max tokens passed through to demo_run_api_asr.",
+    )
     parser.add_argument("--limit", type=int, default=None, help="Optional limit for smoke tests.")
     parser.add_argument("--no-progress", action="store_true", help="Disable the tqdm progress bar.")
     parser.add_argument(
@@ -137,6 +169,58 @@ def get_entry_history(
     return None
 
 
+def normalize_manifest_path(path: str) -> str:
+    """Apply the same slidespeech path rewrite used for audio entries."""
+    return path.replace(SOURCE_PREFIX, TARGET_PREFIX, 1)
+
+
+def load_image_map(image_file: str | None, image_field: str) -> dict[str, list[str]]:
+    """Load optional per-entry image paths from a JSONL file keyed by `key`."""
+    if not image_file:
+        return {}
+
+    image_by_key: dict[str, list[str]] = {}
+    with Path(image_file).open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            item = json.loads(line)
+            key = item.get("key")
+            if not isinstance(key, str) or not key.strip():
+                raise ValueError(f"Image JSONL line {line_number} must contain a non-empty string key")
+            value = item.get(image_field) if image_field else None
+            if not isinstance(value, str):
+                raise ValueError(
+                    f"Image JSONL line {line_number} field {image_field!r} must be a string"
+                )
+            if value.strip():
+                image_by_key[key] = [normalize_manifest_path(value)]
+    return image_by_key
+
+
+def get_entry_images(
+    entry: dict[str, Any],
+    args: argparse.Namespace,
+    image_by_key: dict[str, list[str]],
+) -> list[str]:
+    """Return image-file or per-entry image paths for one manifest entry."""
+    key = str(entry["key"])
+    if key in image_by_key:
+        return image_by_key[key]
+
+    if not args.image_field:
+        return []
+
+    value = entry.get(args.image_field)
+    if value is None:
+        return []
+    if not isinstance(value, str):
+        raise ValueError(f"Input entry {key} field {args.image_field!r} must be a string")
+    if not value.strip():
+        return []
+    return [normalize_manifest_path(value)]
+
+
 def compact_prediction(prediction: str) -> str:
     """Keep each pred.txt record on one line."""
     return " ".join(prediction.strip().split())
@@ -199,7 +283,9 @@ def extract_balanced_json(text: str) -> str | None:
 def parse_prediction(output: str) -> str:
     """Extract the transcript from demo output."""
     final_section = output
-    if "Final Transcript" in output:
+    if "Final Answer" in output:
+        final_section = output.rsplit("Final Answer", 1)[1]
+    elif "Final Transcript" in output:
         final_section = output.split("Final Transcript", 1)[1]
     if "Confidence:" in final_section:
         final_section = final_section.split("Confidence:", 1)[0]
@@ -209,7 +295,7 @@ def parse_prediction(output: str) -> str:
     json_text = extract_balanced_json(candidate)
     if json_text:
         parsed = json.loads(json_text)
-        for key in ("pred", "transcript", "answer"):
+        for key in ("pred", "transcription", "transcript", "answer"):
             value = parsed.get(key)
             if isinstance(value, str) and value.strip():
                 return compact_prediction(value)
@@ -241,6 +327,7 @@ async def run_entry(
     args: argparse.Namespace,
     log_dir: Path,
     history_text: str | None,
+    image_by_key: dict[str, list[str]],
 ) -> tuple[str, str, bool]:
     """Run one manifest entry and return key, prediction, success."""
     key = str(entry["key"])
@@ -250,21 +337,22 @@ async def run_entry(
         "audio_agent.examples.demo_run_api_asr",
         "--audio",
         str(entry["path"]),
-        "--frontend-model",
-        args.frontend_model,
-        "--planner-model",
-        args.planner_model,
         "--max-steps",
         str(args.max_steps),
+        "--max-tokens",
+        str(args.max_tokens),
+        "--ablation",
+        args.ablation,
     ]
-    if args.planner_api_key:
-        command.extend(["--planner-api-key", args.planner_api_key])
-    if args.planner_base_url:
-        command.extend(["--planner-base-url", args.planner_base_url])
+    if args.frontend_max_tokens is not None:
+        command.extend(["--frontend-max-tokens", str(args.frontend_max_tokens)])
+    if args.question:
+        command.extend(["--question", args.question])
+    image_paths = get_entry_images(entry, args, image_by_key)
+    if image_paths:
+        command.extend(["--image", *image_paths])
     if history_text is not None:
-        history_path = log_dir / f"{key}.history.txt"
-        history_path.write_text(history_text, encoding="utf-8")
-        command.extend(["--external-memory-path", str(history_path)])
+        command.extend(["--external-memory-text", history_text])
 
     log_path = log_dir / f"{key}.log"
     last_output = ""
@@ -321,6 +409,7 @@ async def run_batch(args: argparse.Namespace) -> int:
 
     entries = load_entries(input_path, args.limit)
     history_by_key, global_history = load_history_map(args.history_file, args.history_field)
+    image_by_key = load_image_map(args.image_file, args.image_field)
     predictions = load_existing_predictions(output_path)
     pending_entries = [entry for entry in entries if str(entry["key"]) not in predictions]
     failures: list[str] = []
@@ -337,7 +426,13 @@ async def run_batch(args: argparse.Namespace) -> int:
     async def worker(entry: dict[str, Any]) -> None:
         async with semaphore:
             history_text = get_entry_history(entry, args, history_by_key, global_history)
-            key, prediction, ok = await run_entry(entry, args, log_dir, history_text)
+            key, prediction, ok = await run_entry(
+                entry,
+                args,
+                log_dir,
+                history_text,
+                image_by_key,
+            )
             if ok:
                 predictions[key] = prediction
             else:
@@ -372,8 +467,12 @@ async def run_batch(args: argparse.Namespace) -> int:
 def main() -> int:
     """Entry point."""
     args = build_parser().parse_args()
-    if not os.environ.get("DASHSCOPE_API_KEY") and not os.environ.get("OPENAI_API_KEY"):
-        print("DASHSCOPE_API_KEY or OPENAI_API_KEY is required.", file=sys.stderr)
+    if (
+        not os.environ.get("API_KEY")
+        and not os.environ.get("DASHSCOPE_API_KEY")
+        and not os.environ.get("OPENAI_API_KEY")
+    ):
+        print("API_KEY, DASHSCOPE_API_KEY, or OPENAI_API_KEY is required.", file=sys.stderr)
         return 1
     return asyncio.run(run_batch(args))
 

@@ -249,18 +249,51 @@ python -m audio_agent.examples.demo_run_api_full \
   --planner-model "qwen3.5-plus"
 
 # ASR API demo. It does not require --question, skips initial_prompt_node,
-# starts the agent graph at frontend_evidence_node, and returns JSON:
-# {"pred": "<transcript>"}
+# starts the agent graph at frontend_evidence_node, and returns transcript JSON
+# such as {"transcription": "<transcript>"}.
 python -m audio_agent.examples.demo_run_api_asr \
   --audio /data/test_oracle_v1/data/format.1/data_wav.ark:16920526 \
   --frontend-model "qwen3-omni-flash"
 
+# Image-guided ASR ablations for demo_run_api_asr:
+#   full: complete agent with planner, tools, and critic
+#   frontend-only: frontend model only, no planner/tools/critic; final answer must
+#                  be valid transcript JSON or the demo fails loudly
+#   no-critic-no-image-tools: disable critic and qwen_vl_ocr/image_captioner/image_qa
+#   no-critic: disable only the real critic
+python -m audio_agent.examples.demo_run_api_asr \
+  --audio /path/to/audio.wav \
+  --image /path/to/reference.png \
+  --ablation no-critic
+
 # Batch ASR over a JSONL manifest, rewriting the slidespeech prefix to /data
 # and writing lines as: id pred
-python scripts/batch_api_asr.py \
+python -m audio_agent.examples.batch_api_asr \
   --input /data/dev_oracle_v1/multitask.jsonl \
   --output pred.txt \
-  --workers 8
+  --workers 8 \
+  --ablation no-critic
+
+# Optionally provide image paths from a separate JSONL keyed by key/id/utt_id.
+python -m audio_agent.examples.batch_api_asr \
+  --input /data/dev_oracle_v1/multitask.jsonl \
+  --image-file /path/to/images.jsonl \
+  --image-field image \
+  --ablation no-critic
+
+# Convenience wrappers for the full model and three ASR ablations:
+# - full
+# - frontend-only
+# - no-critic-no-image-tools
+# - no-critic
+INPUT=/data/dev_oracle_v1/multitask.jsonl WORKERS=8 IMAGE_FIELD=image ./examples/batch_full.sh
+INPUT=/data/dev_oracle_v1/multitask.jsonl WORKERS=8 ./examples/batch_ablation_frontend_only.sh
+INPUT=/data/dev_oracle_v1/multitask.jsonl WORKERS=8 ./examples/batch_ablation_no_critic_no_image_tools.sh
+INPUT=/data/dev_oracle_v1/multitask.jsonl WORKERS=8 IMAGE_FIELD=image ./examples/batch_ablation_no_critic.sh
+
+# API/model settings are intentionally not passed by the batch wrappers.
+# Set API_KEY/BASE_URL and PLANNER_API_KEY/PLANNER_BASE_URL in the environment
+# when you want demo_run_api_asr to use separate frontend and planner endpoints.
 
 # Multi-audio example with API (speaker verification)
 python -m audio_agent.examples.demo_run_api_full \

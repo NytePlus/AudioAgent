@@ -1,0 +1,14 @@
+---
+description: Read runtime configuration before changing API/model code
+alwaysApply: true
+---
+
+# Runtime Config First
+
+Before answering or editing code related to API keys, base URLs, model names, batch scripts, demos, or environment-dependent behavior:
+
+1. Read `.devcontainer/devcontainer.json` if it exists.
+2. Read `.env`, `.env.example`, or relevant environment docs if they exist.
+3. Prefer existing environment variable names already used by the project.
+4. Do not invent new env var names when equivalent names already exist.
+5. If config files contain secrets, do not repeat secret values in the response.

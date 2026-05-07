@@ -5,17 +5,37 @@ from __future__ import annotations
 import re
 import struct
 import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
 import wave
 from pathlib import Path
 from typing import Any
 
 
 _ARK_OFFSET_RE = re.compile(r"^(?P<ark_path>.+\.ark):(?P<offset>\d+)$")
+_AUDIO_CONTENT_TYPE_EXTENSIONS = {
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/wave": ".wav",
+    "audio/mpeg": ".mp3",
+    "audio/mp3": ".mp3",
+    "audio/ogg": ".ogg",
+    "audio/flac": ".flac",
+    "audio/x-flac": ".flac",
+    "audio/mp4": ".m4a",
+}
 
 
 def is_ark_offset_path(path: str) -> bool:
     """Return whether path looks like a Kaldi-style ark byte-offset reference."""
     return _ARK_OFFSET_RE.match(path.strip()) is not None
+
+
+def is_http_audio_url(path: str) -> bool:
+    """Return whether path is an HTTP(S) URL."""
+    parsed = urllib.parse.urlparse(path.strip())
+    return parsed.scheme in {"http", "https"}
 
 
 def resolve_audio_input_path(path: str) -> str:
@@ -25,8 +45,13 @@ def resolve_audio_input_path(path: str) -> str:
     ``data_wav.ark:16742152``. Kaldi ark entries are read with ``kaldiio`` when
     possible, then written to a temporary WAV file for downstream audio models.
     Offsets that point directly at RIFF/WAV bytes are also supported.
+    HTTP(S) URLs are downloaded to temporary files so every downstream component
+    receives a local file path.
     """
     stripped = path.strip()
+    if is_http_audio_url(stripped):
+        return _download_audio_url_to_temp(stripped)
+
     match = _ARK_OFFSET_RE.match(stripped)
     if match is None:
         return str(Path(stripped).resolve())
@@ -39,6 +64,32 @@ def resolve_audio_input_path(path: str) -> str:
 def resolve_audio_input_paths(paths: list[str]) -> list[str]:
     """Resolve a list of audio input paths."""
     return [resolve_audio_input_path(path) for path in paths]
+
+
+def _download_audio_url_to_temp(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    suffix = Path(urllib.parse.unquote(parsed.path)).suffix
+    request = urllib.request.Request(url, headers={"User-Agent": "audio-agent/1.0"})
+
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            if not suffix:
+                content_type = response.headers.get_content_type().lower()
+                suffix = _AUDIO_CONTENT_TYPE_EXTENSIONS.get(content_type, ".audio")
+            output = tempfile.NamedTemporaryFile(
+                prefix="audio_url_",
+                suffix=suffix,
+                delete=False,
+            )
+            with output:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    output.write(chunk)
+            return output.name
+    except urllib.error.URLError as exc:
+        raise ValueError(f"Failed to download audio URL {url}: {exc}") from exc
 
 
 def _materialize_wav_from_ark(ark_path: Path, offset: int) -> str:
